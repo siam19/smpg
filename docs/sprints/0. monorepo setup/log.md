@@ -11,6 +11,7 @@ Initialized the Send Money Payment Gateway (SMPG) monorepo using **Bun** workspa
 
 #### Root & Monorepo Configuration
 - [`.gitignore`](file:///home/bast0k/projects/smpg/.gitignore): Ignores `node_modules`, `dist`, `.wrangler`, `.mf`, environment files, and local logs.
+- [`README.md`](file:///home/bast0k/projects/smpg/README.md): High-level overview, key features, architecture layout, quick start guide, and documentation links.
 - [`package.json`](file:///home/bast0k/projects/smpg/package.json): Root configuration defining Bun workspaces (`apps/*`, `packages/*`, `examples/*`) and root lifecycle scripts (`dev`, `build`, `typecheck`, `test`).
 - [`tsconfig.json`](file:///home/bast0k/projects/smpg/tsconfig.json): Base TypeScript configuration tailored for Bun and modern bundlers.
 
