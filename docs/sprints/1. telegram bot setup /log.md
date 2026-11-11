@@ -42,6 +42,13 @@ Completed the architectural design and full implementation of the **SMPG Payment
 - [`apps/core/src/bot/index.ts`](file:///home/bast0k/projects/smpg/apps/core/src/bot/index.ts): Bot factory with `botInfo` pre-caching to eliminate cold-start latency.
 - [`apps/core/src/index.ts`](file:///home/bast0k/projects/smpg/apps/core/src/index.ts): Mounted `POST /v1/telegram-webhook` with `X-Telegram-Bot-Api-Secret-Token` check and connected scheduled cron handler.
 
+#### Cloudflare Deployment & Webhook Registration
+- Created remote Cloudflare D1 database `smpg` (`9452d09a-5315-49a3-b178-fb1e04ca80cd`) and executed remote migration `0001_initial_schema.sql` (13 commands executed).
+- Created remote Cloudflare R2 bucket `smpg-bucket`.
+- Uploaded secrets using `wrangler secret put`: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `ENCRYPTION_KEY`.
+- Deployed `apps/core` to Cloudflare Workers at `https://smpg-core.fhasan-gch.workers.dev`.
+- Registered webhook with Telegram Bot API pointing to `https://smpg-core.fhasan-gch.workers.dev/v1/telegram-webhook` with `secret_token` matching `TELEGRAM_WEBHOOK_SECRET`. Verified via `getWebhookInfo` (`has_custom_certificate: false`, `pending_update_count: 0`).
+
 #### Tests
 - [`apps/core/test/crypto.test.ts`](file:///home/bast0k/projects/smpg/apps/core/test/crypto.test.ts): AES-GCM encryption/decryption, SHA-256, key generation tests.
 - [`apps/core/test/wallet.test.ts`](file:///home/bast0k/projects/smpg/apps/core/test/wallet.test.ts): Asia/Dhaka day boundary tests.
