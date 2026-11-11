@@ -31,6 +31,29 @@ export function createUndoKeyboard(paymentId: string): InlineKeyboard {
 }
 
 /**
+ * Onboarding: NID / Passport availability keyboard.
+ */
+export function createNidQuestionKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text('Yes', 'onboarding:nid:yes')
+    .text('No', 'onboarding:nid:no');
+}
+
+/**
+ * Onboarding: Create Store action keyboard (single button).
+ */
+export function createCreateStoreKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text('🏪 Create Store', 'onboarding:create_store');
+}
+
+/**
+ * Onboarding: Brand color selection with Skip button.
+ */
+export function createBrandColorKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text('⏭ Skip', 'onboarding:skip_color');
+}
+
+/**
  * Main dashboard menu keyboard.
  */
 export function createMainMenuKeyboard(): InlineKeyboard {

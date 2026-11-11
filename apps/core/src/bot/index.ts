@@ -22,7 +22,10 @@ import { handlePaymentsListCommand, handleReopenCommand } from './commands/payme
 import { handleDecisionCallback } from './callbacks/decision';
 import { handleUndoCallback } from './callbacks/undo';
 import { handleMenuCallback } from './callbacks/menu';
+import { handleOnboardingCallback, handleStartOnboarding, handleLogoutCommand } from './handlers/onboarding';
 import { handleTextReply } from './handlers/text';
+import { merchants } from '../db/schema';
+import { eq } from 'drizzle-orm';
 
 /**
  * Creates and configures the grammY bot instance.
@@ -56,6 +59,27 @@ export function createBot(env: Env, db: Database): Bot<BotContext> {
   // Public / onboarding commands
   bot.command('start', handleStartCommand);
   bot.command('help', handleHelpCommand);
+  bot.command('logout', handleLogoutCommand);
+
+  // Command to reset onboarding (useful for testing or re-onboarding)
+  bot.command(['reset', 'restart'], async (ctx) => {
+    if (ctx.merchant) {
+      await ctx.db
+        .update(merchants)
+        .set({
+          onboardingStep: 'name',
+          ownerName: null,
+          phoneNumber: null,
+          canProvideNid: 0,
+        })
+        .where(eq(merchants.id, ctx.merchant.id));
+      ctx.merchant.onboardingStep = 'name';
+      ctx.merchant.ownerName = null;
+      ctx.merchant.phoneNumber = null;
+      ctx.merchant.canProvideNid = 0;
+    }
+    await handleStartOnboarding(ctx);
+  });
 
   // Primary interactive dashboards
   bot.command('wallets', requireMerchant, handleWalletsCommand);
@@ -88,18 +112,21 @@ export function createBot(env: Env, db: Database): Bot<BotContext> {
     await handleUndoCallback(ctx, paymentId);
   });
 
+  // Onboarding callbacks
+  bot.callbackQuery(/^onboarding:.+$/, async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    await handleOnboardingCallback(ctx, data);
+  });
+
   // Dashboard navigation and interactive action callbacks
   bot.callbackQuery(/^(menu|wallet|settings|keys|pay):.+$/, async (ctx) => {
     const data = ctx.callbackQuery.data;
     await handleMenuCallback(ctx, data);
   });
 
-  // Handle interactive text replies (from ForceReply prompts)
+  // Handle incoming text messages (onboarding progression & replies to ForceReply prompts)
   bot.on('message:text', async (ctx, next) => {
-    if (ctx.message.reply_to_message) {
-      await handleTextReply(ctx);
-      return;
-    }
+    await handleTextReply(ctx);
     await next();
   });
 

@@ -6,6 +6,11 @@ import {
   formatCodCard,
   formatSubmittedCard,
 } from '../src/bot/views/cards';
+import {
+  createBrandColorKeyboard,
+  createCreateStoreKeyboard,
+  createNidQuestionKeyboard,
+} from '../src/bot/views/keyboards';
 import type { Payment, MerchantWallet } from '../src/db/schema';
 
 describe('Telegram Bot & Views', () => {
@@ -115,5 +120,28 @@ describe('Telegram Bot & Views', () => {
     // 5. Final Status Badge
     const finalCard = appendFinalDecisionStatus(bkashCard, 'approve', '@seller', '14:32');
     expect(finalCard).toContain('Approved by @seller · 14:32');
+  });
+
+  test('Onboarding keyboards have exact required actions', () => {
+    // 1. NID Question Keyboard
+    const nidKb = createNidQuestionKeyboard();
+    expect(nidKb.inline_keyboard.length).toBe(1);
+    expect(nidKb.inline_keyboard[0][0].text).toBe('Yes');
+    expect(nidKb.inline_keyboard[0][0].callback_data).toBe('onboarding:nid:yes');
+    expect(nidKb.inline_keyboard[0][1].text).toBe('No');
+    expect(nidKb.inline_keyboard[0][1].callback_data).toBe('onboarding:nid:no');
+
+    // 2. Create Store Keyboard (Single button)
+    const storeKb = createCreateStoreKeyboard();
+    expect(storeKb.inline_keyboard.length).toBe(1);
+    expect(storeKb.inline_keyboard[0].length).toBe(1);
+    expect(storeKb.inline_keyboard[0][0].text).toBe('🏪 Create Store');
+    expect(storeKb.inline_keyboard[0][0].callback_data).toBe('onboarding:create_store');
+
+    // 3. Brand Color Keyboard (Skip button)
+    const colorKb = createBrandColorKeyboard();
+    expect(colorKb.inline_keyboard.length).toBe(1);
+    expect(colorKb.inline_keyboard[0][0].text).toBe('⏭ Skip');
+    expect(colorKb.inline_keyboard[0][0].callback_data).toBe('onboarding:skip_color');
   });
 });

@@ -3,19 +3,27 @@ import type { BotContext } from '../context';
 import { merchants, merchantWallets } from '../../db/schema';
 import { generatePrefixedId } from '../../services/crypto';
 import { renderSettingsDashboard, renderWalletsDashboard } from '../callbacks/menu';
+import { handleOnboardingText } from './onboarding';
 
 const BD_PHONE_REGEX = /^01[3-9]\d{8}$/;
 
 /**
- * Handles incoming text messages that are replies to interactive ForceReply prompts.
+ * Handles incoming text messages (both onboarding progression and replies to ForceReply prompts).
  */
 export async function handleTextReply(ctx: BotContext) {
   if (!ctx.merchant) return;
 
-  const replyText = ctx.message?.reply_to_message?.text;
   const input = ctx.message?.text?.trim();
+  if (!input) return;
 
-  if (!replyText || !input) {
+  // 1. Check if the user is in the middle of onboarding
+  if (ctx.merchant.onboardingStep && ctx.merchant.onboardingStep !== 'completed') {
+    const onboardingHandled = await handleOnboardingText(ctx, input);
+    if (onboardingHandled) return;
+  }
+
+  const replyText = ctx.message?.reply_to_message?.text;
+  if (!replyText) {
     return;
   }
 

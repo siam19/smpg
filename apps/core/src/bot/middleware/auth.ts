@@ -29,5 +29,13 @@ export async function requireMerchant(ctx: BotContext, next: NextFunction) {
     );
     return;
   }
+
+  if (ctx.merchant.onboardingStep && ctx.merchant.onboardingStep !== 'completed') {
+    await ctx.reply(
+      '⚠️ Please complete your account onboarding first! Type /start to resume.'
+    );
+    return;
+  }
+
   await next();
 }

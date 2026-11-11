@@ -56,6 +56,18 @@ Completed the architectural design and full implementation of the **SMPG Payment
   - **Text Reply Handler** ([`apps/core/src/bot/handlers/text.ts`](file:///home/bast0k/projects/smpg/apps/core/src/bot/handlers/text.ts)): Intercepts replies to prompts, validates inputs, updates D1, and automatically re-renders the updated dashboard.
   - **One-Tap Actions**: Added 1-tap toggles for COD (`[ 📦 COD: Active (Turn OFF) ]`), store pause/resume, rotation mode (`[ 🔄 Mode: Balanced / Fill First ]`), and 1-tap payment reopening.
 
+#### Onboarding Flow & Developer /logout Command
+- Added migration `0002_merchant_onboarding.sql` to add `owner_name`, `phone_number`, `can_provide_nid`, and `onboarding_step` columns to `merchants` table (applied both locally and remotely to D1).
+- Implemented multi-step interactive onboarding flow:
+  1. `/start` prompts for **Full Name**.
+  2. Next prompts for personal **Phone Number** (`01XXXXXXXXX` validation).
+  3. Next asks "Can you provide NID / Passport if required?" with **Yes / No** buttons.
+  4. Saves responses to `merchants` and displays: `"Welcome to SMPG!"`, `merchant_id`, and a single button: **`[ 🏪 Create Store ]`**.
+  5. Clicking "Create Store" prompts for **Store Name**.
+  6. Next asks for **Brand Color** with HTML color codes link and a **`[ ⏭ Skip ]`** button. (Does not force reply; bot waits for the hex code).
+  7. On hex code entry or Skip, updates database, generates credentials, and displays the main dashboard.
+- Added **`/logout`** command for developers to clear their merchant account and test the onboarding flow from scratch.
+
 #### Tests
 - [`apps/core/test/crypto.test.ts`](file:///home/bast0k/projects/smpg/apps/core/test/crypto.test.ts): AES-GCM encryption/decryption, SHA-256, key generation tests.
 - [`apps/core/test/wallet.test.ts`](file:///home/bast0k/projects/smpg/apps/core/test/wallet.test.ts): Asia/Dhaka day boundary tests.

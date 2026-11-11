@@ -5,6 +5,10 @@ export const merchants = sqliteTable(
   {
     id: text('id').primaryKey(), // mrc_xxx
     telegramChatId: integer('telegram_chat_id').notNull().unique(),
+    ownerName: text('owner_name'),
+    phoneNumber: text('phone_number'),
+    canProvideNid: integer('can_provide_nid').default(0),
+    onboardingStep: text('onboarding_step').default('completed'), // 'name' | 'phone' | 'nid' | 'ready_to_create_store' | 'store_name' | 'brand_color' | 'completed'
     storeName: text('store_name'),
     logoKey: text('logo_key'),
     brandColor: text('brand_color'),
