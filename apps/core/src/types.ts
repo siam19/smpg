@@ -1,9 +1,10 @@
 export interface Env {
   DB: D1Database;
-  LOGOS: R2Bucket;
-  TELEGRAM_BOT_TOKEN?: string;
-  TELEGRAM_WEBHOOK_SECRET?: string;
-  ENCRYPTION_KEY?: string;
+  BUCKET: R2Bucket;
+  TELEGRAM_BOT_TOKEN: string;
+  TELEGRAM_WEBHOOK_SECRET: string;
+  ENCRYPTION_KEY: string;
+  BOT_INFO?: string;
   PUBLIC_BASE_URL: string;
   UNDO_WINDOW_SECONDS: string;
   SUBMITTED_TTL_HOURS: string;

@@ -17,8 +17,8 @@ database_id = "smpg-local-db"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
-binding = "LOGOS"
-bucket_name = "smpg-logos"
+binding = "BUCKET"
+bucket_name = "smpg-bucket"
 
 [triggers]
 crons = ["* * * * *"]

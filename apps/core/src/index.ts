@@ -1,5 +1,9 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { webhookCallback } from 'grammy';
+import { createDb } from './db';
+import { createBot } from './bot';
+import { finalizeDueDecisions } from './services/decision';
 import type { Env } from './types';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -21,17 +25,41 @@ app.get('/', (c) => {
   return c.text('SMPG Core API - Send Money Payment Gateway');
 });
 
+// Telegram Bot Webhook endpoint
+app.post('/v1/telegram-webhook', async (c) => {
+  const secretHeader = c.req.header('X-Telegram-Bot-Api-Secret-Token');
+
+  if (!c.env.TELEGRAM_WEBHOOK_SECRET || secretHeader !== c.env.TELEGRAM_WEBHOOK_SECRET) {
+    return c.text('Unauthorized: Invalid secret token', 401);
+  }
+
+  const db = createDb(c.env.DB);
+  const bot = createBot(c.env, db);
+
+  return webhookCallback(bot, 'hono')(c);
+});
+
+export { app };
+
 export default {
   fetch: app.fetch,
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    // Scheduled cron trigger runs every minute:
-    // 1. Finalise decisions whose 90s undo window has passed
-    // 2. Send reminders for stale SUBMITTED payments (1h, 6h, 24h)
-    // 3. Mark expired CREATED and SUBMITTED payments
-    // 4. Retry pending webhook deliveries with exponential backoff
     ctx.waitUntil(
       (async () => {
-        // Will be implemented in Milestone 1 & 2
+        try {
+          const db = createDb(env.DB);
+          const bot = env.TELEGRAM_BOT_TOKEN ? createBot(env, db) : undefined;
+
+          // 1. Finalize decisions whose 90s undo window has passed
+          const finalized = await finalizeDueDecisions(db, bot);
+          if (finalized > 0) {
+            console.log(`[Cron] Finalized ${finalized} due decisions`);
+          }
+
+          // 2. Additional background maintenance (reminders, webhook retries)
+        } catch (cronErr) {
+          console.error('[Cron] Error during scheduled maintenance:', cronErr);
+        }
       })()
     );
   },
