@@ -8,6 +8,7 @@ import {
   generateWebhookSecret,
   sha256,
 } from '../../services/crypto';
+import { createMainMenuKeyboard } from '../views/keyboards';
 
 export async function handleStartCommand(ctx: BotContext) {
   const chatId = ctx.chat?.id;
@@ -26,17 +27,12 @@ export async function handleStartCommand(ctx: BotContext) {
       [
         `👋 <b>Welcome back to SMPG!</b>`,
         '',
-        `Your account for <b>${storeTitle}</b> is active.`,
+        `Your store <b>${storeTitle}</b> is active.`,
         `Merchant ID: <code>${existingMerchant.id}</code>`,
         '',
-        `<b>Available Commands:</b>`,
-        `• /wallets - View and manage payment wallets`,
-        `• /add_bkash & /add_nagad - Add receiving accounts`,
-        `• /payments - View recent payments`,
-        `• /keys - Manage your API credentials`,
-        `• /help - Full command guide`,
+        `Select an action from the dashboard below:`,
       ].join('\n'),
-      { parse_mode: 'HTML' }
+      { parse_mode: 'HTML', reply_markup: createMainMenuKeyboard() }
     );
     return;
   }
@@ -95,24 +91,21 @@ export async function handleStartCommand(ctx: BotContext) {
     `Your store account has been successfully initialized.`,
     `Merchant ID: <code>${merchantId}</code>`,
     '',
-    `🔑 <b>Your API Keys (Save these securely, shown only once):</b>`,
-    `<b>Live Key:</b>`,
+    `🔑 <b>Your API Credentials (Save these now, shown only once):</b>`,
+    `<b>Live API Key:</b>`,
     `<code>${liveKeyData.key}</code>`,
     '',
-    `<b>Test Key:</b>`,
+    `<b>Test API Key:</b>`,
     `<code>${testKeyData.key}</code>`,
     '',
     `🔒 <b>Webhook Secret:</b>`,
     `<code>${rawWebhookSecret}</code>`,
     '',
-    `👉 <b>Next Steps:</b>`,
-    `1. Add your bKash wallet: <code>/add_bkash 017XXXXXXXX MyWallet</code>`,
-    `2. Add your Nagad wallet: <code>/add_nagad 018XXXXXXXX Nagad1</code>`,
-    `3. Customize your store name: <code>/store_name Your Brand</code>`,
-    `4. Set your webhook URL: <code>/webhook https://your-site.com/api/smpg-webhook</code>`,
-    '',
-    `Type /help for the full list of options.`,
+    `👉 Use the buttons below to configure your receiving wallets and store branding:`,
   ].join('\n');
 
-  await ctx.reply(welcomeText, { parse_mode: 'HTML' });
+  await ctx.reply(welcomeText, {
+    parse_mode: 'HTML',
+    reply_markup: createMainMenuKeyboard(),
+  });
 }

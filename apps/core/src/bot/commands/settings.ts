@@ -2,6 +2,11 @@ import { eq } from 'drizzle-orm';
 import type { BotContext } from '../context';
 import { merchants } from '../../db/schema';
 import { decryptAesGcm } from '../../services/crypto';
+import { renderSettingsDashboard } from '../callbacks/menu';
+
+export async function handleSettingsCommand(ctx: BotContext) {
+  return renderSettingsDashboard(ctx);
+}
 
 export async function handleStoreNameCommand(ctx: BotContext) {
   if (!ctx.merchant) return;
@@ -9,10 +14,19 @@ export async function handleStoreNameCommand(ctx: BotContext) {
   const parts = (ctx.message?.text || '').trim().split(/\s+/);
   const name = parts.slice(1).join(' ').trim();
 
-  if (!name || name.length > 50) {
-    await ctx.reply('⚠️ Usage: <code>/store_name &lt;Store Name (up to 50 chars)&gt;</code>', {
-      parse_mode: 'HTML',
-    });
+  if (!name) {
+    await ctx.reply(
+      '✏️ <b>Set Store Name</b>\n\nPlease reply with your new store or brand name (up to 50 characters):',
+      {
+        parse_mode: 'HTML',
+        reply_markup: { force_reply: true, input_field_placeholder: 'My Brand Store' },
+      }
+    );
+    return;
+  }
+
+  if (name.length > 50) {
+    await ctx.reply('⚠️ Store name must be 50 characters or less.', { parse_mode: 'HTML' });
     return;
   }
 
@@ -20,8 +34,10 @@ export async function handleStoreNameCommand(ctx: BotContext) {
     .update(merchants)
     .set({ storeName: name })
     .where(eq(merchants.id, ctx.merchant.id));
+  ctx.merchant.storeName = name;
 
   await ctx.reply(`✅ Store name updated to: <b>${name}</b>`, { parse_mode: 'HTML' });
+  return renderSettingsDashboard(ctx);
 }
 
 export async function handleBrandColorCommand(ctx: BotContext) {
@@ -30,11 +46,21 @@ export async function handleBrandColorCommand(ctx: BotContext) {
   const parts = (ctx.message?.text || '').trim().split(/\s+/);
   const color = parts[1]?.trim();
 
-  if (!color || !/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color)) {
+  if (!color) {
     await ctx.reply(
-      '⚠️ Usage: <code>/brand_color &lt;#hexcode&gt;</code>\nExample: <code>/brand_color #E11D48</code>',
-      { parse_mode: 'HTML' }
+      '🎨 <b>Set Brand Color</b>\n\nPlease reply with a hex color code (e.g. #E11D48 or #10B981):',
+      {
+        parse_mode: 'HTML',
+        reply_markup: { force_reply: true, input_field_placeholder: '#E11D48' },
+      }
     );
+    return;
+  }
+
+  if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color)) {
+    await ctx.reply('⚠️ Invalid hex color code. Example format: #E11D48 or #000000', {
+      parse_mode: 'HTML',
+    });
     return;
   }
 
@@ -42,8 +68,10 @@ export async function handleBrandColorCommand(ctx: BotContext) {
     .update(merchants)
     .set({ brandColor: color })
     .where(eq(merchants.id, ctx.merchant.id));
+  ctx.merchant.brandColor = color;
 
   await ctx.reply(`✅ Brand color updated to: <code>${color}</code>`, { parse_mode: 'HTML' });
+  return renderSettingsDashboard(ctx);
 }
 
 export async function handleCodToggleCommand(ctx: BotContext) {
@@ -52,22 +80,17 @@ export async function handleCodToggleCommand(ctx: BotContext) {
   const parts = (ctx.message?.text || '').trim().split(/\s+/);
   const val = parts[1]?.toLowerCase();
 
-  if (val !== 'on' && val !== 'off') {
-    await ctx.reply('⚠️ Usage: <code>/cod on</code> or <code>/cod off</code>', {
-      parse_mode: 'HTML',
-    });
-    return;
-  }
-
-  const enabled = val === 'on' ? 1 : 0;
+  const nextCod = val ? (val === 'on' ? 1 : 0) : (ctx.merchant.codEnabled === 1 ? 0 : 1);
   await ctx.db
     .update(merchants)
-    .set({ codEnabled: enabled })
+    .set({ codEnabled: nextCod })
     .where(eq(merchants.id, ctx.merchant.id));
+  ctx.merchant.codEnabled = nextCod;
 
-  await ctx.reply(`✅ Cash on Delivery (COD) is now: <b>${val.toUpperCase()}</b>`, {
+  await ctx.reply(`✅ Cash on Delivery (COD) is now: <b>${nextCod ? 'ENABLED' : 'DISABLED'}</b>`, {
     parse_mode: 'HTML',
   });
+  return renderSettingsDashboard(ctx);
 }
 
 export async function handleWebhookCommand(ctx: BotContext) {
@@ -76,11 +99,19 @@ export async function handleWebhookCommand(ctx: BotContext) {
   const parts = (ctx.message?.text || '').trim().split(/\s+/);
   const url = parts[1]?.trim();
 
-  if (!url || !url.startsWith('https://')) {
+  if (!url) {
     await ctx.reply(
-      '⚠️ Usage: <code>/webhook &lt;https://your-domain.com/webhook&gt;</code>\nNote: Must use HTTPS.',
-      { parse_mode: 'HTML' }
+      '🔗 <b>Set Webhook URL</b>\n\nPlease reply with your HTTPS webhook endpoint URL:\n\n<b>Example:</b> <code>https://your-site.com/api/smpg-webhook</code>',
+      {
+        parse_mode: 'HTML',
+        reply_markup: { force_reply: true, input_field_placeholder: 'https://...' },
+      }
     );
+    return;
+  }
+
+  if (!url.startsWith('https://')) {
+    await ctx.reply('⚠️ Webhook URL must use HTTPS.', { parse_mode: 'HTML' });
     return;
   }
 
@@ -89,6 +120,7 @@ export async function handleWebhookCommand(ctx: BotContext) {
     .update(merchants)
     .set({ webhookUrl: url })
     .where(eq(merchants.id, ctx.merchant.id));
+  ctx.merchant.webhookUrl = url;
 
   // Dispatch a test ping
   let pingResult = 'Sent test ping';
@@ -144,33 +176,21 @@ export async function handleWebhookCommand(ctx: BotContext) {
     `✅ <b>Webhook URL saved!</b>\nURL: <code>${url}</code>\n\n${pingResult}`,
     { parse_mode: 'HTML' }
   );
+  return renderSettingsDashboard(ctx);
 }
 
 export async function handleHelpCommand(ctx: BotContext) {
   const helpText = [
     `📖 <b>SMPG Payments Bot Guide</b>`,
     '',
-    `<b>Wallet Management:</b>`,
-    `• /wallets - View all wallets and daily capacity`,
-    `• /add_bkash &lt;number&gt; [label] - Add bKash account`,
-    `• /add_nagad &lt;number&gt; [label] - Add Nagad account`,
-    `• /wallet_limit &lt;target&gt; &lt;amount&gt; - Set daily limit`,
-    `• /wallet_pause &lt;target&gt; - Pause wallet`,
-    `• /wallet_resume &lt;target&gt; - Resume wallet`,
-    `• /rotation balanced|fill_first - Wallet rotation mode`,
+    `Use the interactive dashboards to manage your store without manual typing:`,
     '',
-    `<b>Store Settings:</b>`,
-    `• /store_name &lt;name&gt; - Set customer-facing brand name`,
-    `• /brand_color &lt;#hex&gt; - Checkout theme color`,
-    `• /cod on|off - Toggle Cash on Delivery`,
-    `• /webhook &lt;url&gt; - Set outbound webhook URL`,
+    `• /wallets - View wallets, daily usage bars, and add new bKash/Nagad accounts`,
+    `• /settings - Store name, brand color, COD toggle, and webhooks`,
+    `• /payments - View recent payments and reopen rejected ones`,
+    `• /keys - View and rotate API keys`,
     '',
-    `<b>Transactions & Keys:</b>`,
-    `• /payments - View 10 most recent transactions`,
-    `• /reopen &lt;payment_id&gt; - Reopen rejected payment (within 7d)`,
-    `• /keys - Show API key prefixes`,
-    `• /keys rotate live|test - Rotate API keys`,
-    `• /pause & /resume - Global store pause/resume`,
+    `Every dashboard features clickable buttons for one-tap actions and clean prompt replies!`,
   ].join('\n');
 
   await ctx.reply(helpText, { parse_mode: 'HTML' });

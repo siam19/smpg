@@ -49,6 +49,13 @@ Completed the architectural design and full implementation of the **SMPG Payment
 - Deployed `apps/core` to Cloudflare Workers at `https://smpg-core.fhasan-gch.workers.dev`.
 - Registered webhook with Telegram Bot API pointing to `https://smpg-core.fhasan-gch.workers.dev/v1/telegram-webhook` with `secret_token` matching `TELEGRAM_WEBHOOK_SECRET`. Verified via `getWebhookInfo` (`has_custom_certificate: false`, `pending_update_count: 0`).
 
+#### UI Redesign: Interactive Dashboards & ForceReply
+- Redesigned the Telegram bot experience to eliminate the inconvenience of typing complex arguments on mobile:
+  - **Dashboards**: Added interactive inline keyboards for `/wallets`, `/settings`, `/keys`, `/payments`, and `/start`.
+  - **ForceReply Prompts**: Tapping `[ ➕ Add bKash ]`, `[ ➕ Add Nagad ]`, `[ ✏️ Store Name ]`, `[ 🎨 Brand Color ]`, `[ 🔗 Set Webhook ]`, or `[ ✏️ Edit Limit ]` (or clicking the command menu without args) sends a native Telegram `ForceReply` prompt with an input placeholder.
+  - **Text Reply Handler** ([`apps/core/src/bot/handlers/text.ts`](file:///home/bast0k/projects/smpg/apps/core/src/bot/handlers/text.ts)): Intercepts replies to prompts, validates inputs, updates D1, and automatically re-renders the updated dashboard.
+  - **One-Tap Actions**: Added 1-tap toggles for COD (`[ 📦 COD: Active (Turn OFF) ]`), store pause/resume, rotation mode (`[ 🔄 Mode: Balanced / Fill First ]`), and 1-tap payment reopening.
+
 #### Tests
 - [`apps/core/test/crypto.test.ts`](file:///home/bast0k/projects/smpg/apps/core/test/crypto.test.ts): AES-GCM encryption/decryption, SHA-256, key generation tests.
 - [`apps/core/test/wallet.test.ts`](file:///home/bast0k/projects/smpg/apps/core/test/wallet.test.ts): Asia/Dhaka day boundary tests.

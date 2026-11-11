@@ -1,62 +1,10 @@
 import { and, desc, eq } from 'drizzle-orm';
 import type { BotContext } from '../context';
 import { paymentEvents, payments, trxSubmissions } from '../../db/schema';
-
-function getStatusBadge(status: string): string {
-  switch (status) {
-    case 'PAID':
-      return '✅ PAID';
-    case 'SUBMITTED':
-      return '⏳ SUBMITTED';
-    case 'CONFIRMED':
-      return '📦 CONFIRMED';
-    case 'REJECTED':
-      return '❌ REJECTED';
-    case 'CANCELLED':
-      return '🚫 CANCELLED';
-    case 'EXPIRED':
-      return '⏰ EXPIRED';
-    default:
-      return status;
-  }
-}
+import { renderPaymentsDashboard } from '../callbacks/menu';
 
 export async function handlePaymentsListCommand(ctx: BotContext) {
-  if (!ctx.merchant) return;
-
-  const list = await ctx.db
-    .select()
-    .from(payments)
-    .where(eq(payments.merchantId, ctx.merchant.id))
-    .orderBy(desc(payments.createdAt))
-    .limit(10);
-
-  if (list.length === 0) {
-    await ctx.reply('📭 No payments recorded yet.', { parse_mode: 'HTML' });
-    return;
-  }
-
-  const lines = ['📋 <b>Recent 10 Payments</b>', ''];
-
-  for (const p of list) {
-    const badge = getStatusBadge(p.status);
-    const orderRef = p.externalOrderId ? ` · ${p.externalOrderId}` : '';
-    const dateStr = new Date(p.createdAt * 1000).toLocaleString('en-US', {
-      timeZone: 'Asia/Dhaka',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-
-    lines.push(
-      `• <code>${p.id}</code>${orderRef} — <b>৳${p.amount.toLocaleString('en-BD')}</b> (${p.method})`,
-      `  Status: ${badge} · ${dateStr}`,
-      ''
-    );
-  }
-
-  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+  return renderPaymentsDashboard(ctx);
 }
 
 export async function handleReopenCommand(ctx: BotContext) {
@@ -67,7 +15,7 @@ export async function handleReopenCommand(ctx: BotContext) {
 
   if (!paymentId) {
     await ctx.reply(
-      '⚠️ Usage: <code>/reopen &lt;payment_id&gt;</code>\nExample: <code>/reopen pay_8f2k</code>',
+      '⚠️ Usage: <code>/reopen &lt;payment_id&gt;</code>\nExample: <code>/reopen pay_8f2k</code>\n\nOr simply tap the 🔄 Reopen button under /payments.',
       { parse_mode: 'HTML' }
     );
     return;
@@ -147,4 +95,5 @@ export async function handleReopenCommand(ctx: BotContext) {
     `✅ Payment <code>${paymentId}</code> has been reopened and set to <b>SUBMITTED</b>.`,
     { parse_mode: 'HTML' }
   );
+  return renderPaymentsDashboard(ctx);
 }
