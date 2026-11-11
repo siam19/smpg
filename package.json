@@ -1,0 +1,21 @@
+{
+  "name": "smpg-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "dev": "bun --filter @smpg/core dev",
+    "build": "bun --filter '*' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "tsup": "^9.0.0",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,24 @@
+name = "smpg-core"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+PUBLIC_BASE_URL = "http://localhost:8787"
+UNDO_WINDOW_SECONDS = "90"
+SUBMITTED_TTL_HOURS = "72"
+CREATED_TTL_MINUTES = "60"
+LATE_SUBMIT_HOURS = "24"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "smpg"
+database_id = "smpg-local-db"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "LOGOS"
+bucket_name = "smpg-logos"
+
+[triggers]
+crons = ["* * * * *"]

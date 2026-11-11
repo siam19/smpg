@@ -1,0 +1,54 @@
+{
+  "name": "send-money-payment-gateway",
+  "version": "0.1.0",
+  "description": "Official TypeScript/JavaScript client SDK for Send Money Payment Gateway (SMPG)",
+  "keywords": [
+    "smpg",
+    "payment",
+    "gateway",
+    "bkash",
+    "nagad",
+    "cod",
+    "bangladesh"
+  ],
+  "homepage": "https://github.com/your-org/smpg#readme",
+  "bugs": {
+    "url": "https://github.com/your-org/smpg/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/your-org/smpg.git",
+    "directory": "packages/sdk"
+  },
+  "license": "MIT",
+  "author": "SMPG Contributors",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": {
+        "import": "./dist/index.d.ts",
+        "require": "./dist/index.d.cts"
+      },
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "tsup": "^9.0.0",
+    "typescript": "^5.7.3"
+  }
+}

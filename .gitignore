@@ -1,0 +1,13 @@
+node_modules/
+dist/
+build/
+.svelte-kit/
+.output/
+.wrangler/
+.mf/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+coverage/
