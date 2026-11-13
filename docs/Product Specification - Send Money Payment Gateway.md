@@ -53,9 +53,3 @@ The architecture is designed to support a hybrid model in the future:
 1. **Tier 1 (Manual):** The current Telegram human-in-the-loop flow.
 2. **Tier 2 (Automated):** An optional companion Android app that reads incoming SMS messages from bKash/Nagad. If the SMS TrxID and amount perfectly match a `PENDING` transaction in the database, the Cloudflare Worker auto-approves the payment, skips the Telegram buttons (sending a read-only receipt instead), and instantly resolves the Shopify/Webhook checkout.
 
----
-
-## Database Schema Concept (D1)
-
-* **`merchants` Table:** `id`, `telegram_chat_id`, `api_key_hash`, `store_name`, `logo_url`, `bkash_number`, `nagad_number`, `webhook_url`, `webhook_secret`.
-* **`payments` Table:** `id`, `merchant_id`, `external_order_id`, `provider`, `amount`, `trx_id`, `status`, `verification_method` (Telegram/SMS), `created_at`.
