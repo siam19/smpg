@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { SMPG } from '@smpg/sdk';
+import { SMPG } from 'send-money-payment-gateway';
 import { OrderStore } from './db';
 
 export function createStorefrontApp(smpgClient?: SMPG) {

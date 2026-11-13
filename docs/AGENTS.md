@@ -53,7 +53,7 @@ When a customer selects Cash on Delivery:
 ## Quick Reference Code Snippet
 
 ```typescript
-import { SMPG } from '@smpg/sdk';
+import { SMPG } from 'send-money-payment-gateway';
 
 const smpg = new SMPG(process.env.SMPG_SECRET_KEY!, {
   baseUrl: process.env.SMPG_CORE_URL!,

@@ -22,14 +22,14 @@
 
 ## Quick Installation
 ```bash
-npm install @smpg/sdk
+npm install send-money-payment-gateway
 # or
-bun add @smpg/sdk
+bun add send-money-payment-gateway
 ```
 
 ## Server SDK Usage
 ```typescript
-import { SMPG } from '@smpg/sdk';
+import { SMPG } from 'send-money-payment-gateway';
 
 const smpg = new SMPG(process.env.SMPG_SECRET_KEY!, {
   baseUrl: process.env.SMPG_CORE_URL!, // e.g. https://smpg-core.<account>.workers.dev
@@ -53,7 +53,7 @@ await smpg.payments.submit(payment.id, { trx_id: '9K3L2M1ABC' });
 
 ## Browser-Safe Checkout (No Secret Key)
 ```typescript
-import { SMPGCheckout } from '@smpg/sdk';
+import { SMPGCheckout } from 'send-money-payment-gateway';
 
 const checkout = new SMPGCheckout('https://smpg-core.<account>.workers.dev');
 const session = await checkout.getSession('pay_xxx');

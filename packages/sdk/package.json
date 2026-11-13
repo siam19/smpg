@@ -1,5 +1,5 @@
 {
-  "name": "@smpg/sdk",
+  "name": "send-money-payment-gateway",
   "version": "0.1.0",
   "description": "Official TypeScript/JavaScript client SDK for Send Money Payment Gateway (SMPG)",
   "keywords": [
@@ -35,6 +35,9 @@
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist",

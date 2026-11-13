@@ -9,7 +9,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@smpg/sdk": "workspace:*",
+    "send-money-payment-gateway": "workspace:*",
     "hono": "^4.7.2"
   },
   "devDependencies": {

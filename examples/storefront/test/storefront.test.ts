@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from 'bun:test';
-import { SMPG } from '@smpg/sdk';
+import { SMPG } from 'send-money-payment-gateway';
 import { createStorefrontApp } from '../src/app';
 import { OrderStore } from '../src/db';
 

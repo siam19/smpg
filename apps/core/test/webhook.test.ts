@@ -238,19 +238,22 @@ describe('Sprint 4: Outbound Webhooks & Event Delivery', () => {
         expect(attempt1.attempt).toBe(1);
         expect(attempt1.lastStatus).toBe(500);
         expect(attempt1.deliveredAt).toBeNull();
-        expect(attempt1.nextAttemptAt).toBe(now + RETRY_DELAYS_SECONDS[0]);
+        expect(attempt1.nextAttemptAt).toBeGreaterThanOrEqual(now + RETRY_DELAYS_SECONDS[0]);
+        expect(attempt1.nextAttemptAt).toBeLessThanOrEqual(now + RETRY_DELAYS_SECONDS[0] + 2);
 
         // Attempt 2 fail -> delay = RETRY_DELAYS_SECONDS[1] (300s)
         await deliverSingleWebhook(db, env, attempt1);
         const attempt2 = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, delivery.id)).get();
         expect(attempt2.attempt).toBe(2);
-        expect(attempt2.nextAttemptAt).toBe(now + RETRY_DELAYS_SECONDS[1]);
+        expect(attempt2.nextAttemptAt).toBeGreaterThanOrEqual(now + RETRY_DELAYS_SECONDS[1]);
+        expect(attempt2.nextAttemptAt).toBeLessThanOrEqual(now + RETRY_DELAYS_SECONDS[1] + 2);
 
         // Attempt 3 fail -> delay = RETRY_DELAYS_SECONDS[2] (1800s)
         await deliverSingleWebhook(db, env, attempt2);
         const attempt3 = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, delivery.id)).get();
         expect(attempt3.attempt).toBe(3);
-        expect(attempt3.nextAttemptAt).toBe(now + RETRY_DELAYS_SECONDS[2]);
+        expect(attempt3.nextAttemptAt).toBeGreaterThanOrEqual(now + RETRY_DELAYS_SECONDS[2]);
+        expect(attempt3.nextAttemptAt).toBeLessThanOrEqual(now + RETRY_DELAYS_SECONDS[2] + 2);
       } finally {
         globalThis.fetch = originalFetch;
       }

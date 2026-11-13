@@ -56,18 +56,18 @@ SMPG is a multi-tenant payment gateway designed specifically for the Bangladeshi
 
 ---
 
-## 3. Server SDK (`@smpg/sdk`)
+## 3. Server SDK (`send-money-payment-gateway`)
 
 Install via npm or bun:
 ```bash
-npm install @smpg/sdk
+npm install send-money-payment-gateway
 # or
-bun add @smpg/sdk
+bun add send-money-payment-gateway
 ```
 
 ### Initializing the Client
 ```typescript
-import { SMPG } from '@smpg/sdk';
+import { SMPG } from 'send-money-payment-gateway';
 
 export const smpg = new SMPG(process.env.SMPG_SECRET_KEY!, {
   baseUrl: process.env.SMPG_CORE_URL!, // e.g. https://smpg-core.<account>.workers.dev
@@ -118,7 +118,7 @@ const submitted = await smpg.payments.submit(payment.id, {
 When rendering an embedded checkout widget on the client side (React, Vue, Svelte), use `SMPGCheckout` without exposing secret API keys:
 
 ```typescript
-import { SMPGCheckout } from '@smpg/sdk';
+import { SMPGCheckout } from 'send-money-payment-gateway';
 
 const checkout = new SMPGCheckout('https://smpg-core.<account>.workers.dev');
 

@@ -56,7 +56,31 @@ const payment = await smpg.payments.create(
 console.log(payment.checkout_url);
 ```
 
-### 3. Handle Webhook Events (Next.js / Edge / Node)
+### 3. Custom / Embedded Checkout Box (Optional)
+
+If you prefer building a native checkout UI directly inside your website instead of redirecting, use the browser-safe `SMPGCheckout` client:
+
+```typescript
+import { SMPGCheckout } from "send-money-payment-gateway";
+
+// Safe for browser / client-side code - requires NO API secret!
+const checkout = new SMPGCheckout(payment.id, {
+  baseUrl: "https://smpg-core.your-domain.workers.dev",
+});
+
+// 1. Fetch public session details (amount, available methods, store branding)
+const session = await checkout.getSession();
+
+// 2. Customer selects a payment method (e.g. bKash)
+const { wallet } = await checkout.selectMethod("bkash");
+console.log(`Please send ৳${session.amount} to ${wallet.number} (${wallet.type})`);
+
+// 3. Customer submits their TrxID
+const result = await checkout.submit({ trx_id: "9A8B7C6D5E" });
+console.log(result.status); // "SUBMITTED"
+```
+
+### 4. Handle Webhook Events (Next.js / Edge / Node)
 
 ```typescript
 export async function POST(req: Request) {
