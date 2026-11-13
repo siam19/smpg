@@ -66,7 +66,7 @@ export const payments = sqliteTable(
       .references(() => merchants.id),
     mode: text('mode').notNull(), // 'test' | 'live'
     externalOrderId: text('external_order_id'),
-    method: text('method').notNull(), // 'cod' | 'bkash' | 'nagad'
+    method: text('method'), // 'cod' | 'bkash' | 'nagad' (optional at creation, chosen at checkout)
     walletId: text('wallet_id').references(() => merchantWallets.id),
     amount: integer('amount').notNull(), // BDT
     status: text('status').notNull(), // CREATED, SUBMITTED, CONFIRMED, PAID, REJECTED, EXPIRED, CANCELLED

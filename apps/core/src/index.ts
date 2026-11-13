@@ -4,9 +4,11 @@ import { webhookCallback } from 'grammy';
 import { createDb } from './db';
 import { createBot } from './bot';
 import { finalizeDueDecisions } from './services/decision';
+import { authMiddleware, type ApiVariables } from './api/auth';
+import { paymentsRouter } from './api/payments';
 import type { Env } from './types';
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{ Bindings: Env; Variables: ApiVariables }>();
 
 app.use('*', cors());
 
@@ -24,6 +26,11 @@ app.get('/health', (c) => {
 app.get('/', (c) => {
   return c.text('SMPG Core API - Send Money Payment Gateway');
 });
+
+// Primary Payments REST API (Bearer auth)
+app.use('/v1/payments/*', authMiddleware);
+app.use('/v1/payments', authMiddleware);
+app.route('/v1/payments', paymentsRouter);
 
 // Telegram Bot Webhook endpoint
 app.post('/v1/telegram-webhook', async (c) => {

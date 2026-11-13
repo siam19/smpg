@@ -1,6 +1,6 @@
 # Sprint 2: Core Payments REST API
 
-> **Status**: Planned (Next)  
+> **Status**: Completed  
 > **Reference**: [SMPG Master Plan - Section 6 (State Machine), Section 7 (Data Model), Section 8 (REST API v1)](../../SMPG_Plan.md)
 
 ---
