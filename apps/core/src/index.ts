@@ -6,6 +6,7 @@ import { createBot } from './bot';
 import { finalizeDueDecisions } from './services/decision';
 import { authMiddleware, type ApiVariables } from './api/auth';
 import { paymentsRouter } from './api/payments';
+import { checkoutRouter } from './api/checkout';
 import type { Env } from './types';
 
 const app = new Hono<{ Bindings: Env; Variables: ApiVariables }>();
@@ -31,6 +32,9 @@ app.get('/', (c) => {
 app.use('/v1/payments/*', authMiddleware);
 app.use('/v1/payments', authMiddleware);
 app.route('/v1/payments', paymentsRouter);
+
+// Customer Checkout Endpoints (Public capability URLs)
+app.route('/c', checkoutRouter);
 
 // Telegram Bot Webhook endpoint
 app.post('/v1/telegram-webhook', async (c) => {

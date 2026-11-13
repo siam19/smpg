@@ -1,6 +1,6 @@
 # Sprint 3: Customer Checkout Endpoints & TrxID Verification
 
-> **Status**: Planned  
+> **Status**: Completed  
 > **Reference**: [SMPG Master Plan - Section 3 (Customer Experience), Section 4.1 (TrxID / TxnID), Section 6 (State Machine), Section 8 (Customer-Facing Endpoints)](../../SMPG_Plan.md)
 
 ---
