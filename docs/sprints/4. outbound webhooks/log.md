@@ -1,17 +1,53 @@
-# Sprint 4: Outbound Webhooks Log
+# Sprint 4: Outbound Webhooks & Event Delivery Log
 
 ## Date: 2026-11-13
 
-### Status
-Planned
+### Summary of Changes
+Architected, implemented, and verified the outbound webhook dispatch engine, cryptographic signing service, and exponential backoff retry queue in `apps/core`. Storefronts and developers consume these signed webhooks to fulfill orders asynchronously once payments are verified and finalized. The system supports full end-to-end verification via `@smpg/sdk`'s `constructEvent()` utility, integrated retry processing in Cloudflare Cron Triggers, and merchant Telegram alerts after consecutive delivery failures.
 
 ---
 
-### Planned Tasks
-- [ ] Implement webhook signing utility (`createWebhookSignature`) in `apps/core/src/services/webhook.ts`
-- [ ] Implement `dispatchWebhookEvent` engine with immediate execution and database queue fallback
-- [ ] Add `webhook_deliveries` processor to scheduled cron handler in `apps/core/src/index.ts`
-- [ ] Implement exponential backoff schedule (1m, 5m, 30m, 2h, 12h)
-- [ ] Add Telegram bot alert notification for merchants on 3 consecutive failed attempts
-- [ ] Connect bot `/webhook` command to dispatch an immediate test ping event
-- [ ] Write end-to-end tests verifying delivery and signature verification against `@smpg/sdk`
+### Files Added / Modified
+
+#### Webhook Core Services
+- [`apps/core/src/services/webhook.ts`](file:///home/bast0k/projects/smpg/apps/core/src/services/webhook.ts):
+  - **Why created**: Centralizes all cryptographic HMAC-SHA256 signing, delivery dispatch, and queue processing per Section 10 of [SMPG Master Plan](file:///home/bast0k/projects/smpg/docs/SMPG_Plan.md).
+  - **What changed**:
+    - `computeWebhookSignature(secret, timestamp, rawPayload)`: Computes an HMAC-SHA256 signature using standard Web Crypto API (`crypto.subtle`) over `${timestamp}.${rawPayload}`.
+    - `deliverWebhookPayload(url, secret, eventType, rawPayload, timeoutMs)`: Sends a signed HTTP POST request with headers `Content-Type: application/json`, `x-smpg-signature: t=<timestamp>,v1=<hex_hmac>`, `x-smpg-event: <event_type>`, and `User-Agent: SMPG-Webhook/1.0`. Enforces an AbortController 10-second timeout.
+    - `queueWebhookDelivery(db, paymentId, eventType, eventData)`: Inserts a delivery task into the `webhook_deliveries` table with an event payload (`evt_...`), setting `attempt = 0` and `nextAttemptAt = now`.
+    - `deliverSingleWebhook(db, env, delivery, bot)`: Performs the delivery for a specific row. Decrypts merchant's `webhookSecret` via AES-GCM (`decryptAesGcm`). On HTTP 2xx, updates `deliveredAt = now, nextAttemptAt = null, lastStatus = 200`. On failure, schedules the next retry based on `RETRY_DELAYS_SECONDS` (`[60s, 300s, 1800s, 7200s, 43200s]`). On 3 consecutive failures, dispatches an alert message directly to the merchant's Telegram chat.
+    - `processPendingWebhookDeliveries(db, env, bot, limit)`: Batch runner querying due retries (`nextAttemptAt <= now AND deliveredAt IS NULL`) and processing them.
+
+#### Cron Worker Maintenance Handler
+- [`apps/core/src/index.ts`](file:///home/bast0k/projects/smpg/apps/core/src/index.ts):
+  - **What changed**: Wired `processPendingWebhookDeliveries` into the Cloudflare Workers `scheduled` cron handler alongside `finalizeDueDecisions`. Pending retries are now evaluated every minute with zero manual intervention.
+
+#### Settings Bot Command
+- [`apps/core/src/bot/commands/settings.ts`](file:///home/bast0k/projects/smpg/apps/core/src/bot/commands/settings.ts):
+  - **What changed**: Refactored `handleWebhookCommand` to use `deliverWebhookPayload` from `../../services/webhook`, eliminating redundant cryptographic boilerplate and providing immediate verification feedback when the merchant updates their webhook URL.
+
+#### Automated Test Suite
+- [`apps/core/test/webhook.test.ts`](file:///home/bast0k/projects/smpg/apps/core/test/webhook.test.ts):
+  - **Why created**: Integration test suite verifying signature verification, retry scheduling, and cron batch processing.
+  - **What changed**: Implemented 7 tests covering:
+    - HMAC-SHA256 signature generation tested against `@smpg/sdk`'s `constructEvent()` verification.
+    - Rejection of tampered payloads by the SDK.
+    - Accurate HTTP header transmission (`x-smpg-signature`, `x-smpg-event`, `User-Agent`).
+    - D1 database queue insertion via `queueWebhookDelivery`.
+    - Successful delivery marking `deliveredAt` in D1.
+    - Exponential backoff retry scheduling (1m -> 5m -> 30m) upon repeated delivery failures.
+    - Batch cron execution via `processPendingWebhookDeliveries` ensuring future retries remain untouched.
+
+---
+
+### Verification Performed
+1. **Automated Test Suite**: Executed `bun test` across the workspace — all **50 tests** passed across 8 test files (435ms).
+2. **TypeScript Compilation**: Executed `bun run typecheck` across all workspace projects (`@smpg/core`, `@smpg/checkout`, `send-money-payment-gateway`) — **0 errors, 0 warnings**.
+3. **Cross-Package Signature Roundtrip**: Verified that signatures generated by `apps/core/src/services/webhook.ts` pass cryptographic validation in `packages/sdk/src/webhooks.ts`.
+
+---
+
+### Things to Look Out For / Future Tasks
+1. **Sprint 5 (Hosted Checkout Frontend)**: Build the SvelteKit frontend in `apps/checkout` connecting to `/c/:id/*` to trigger payments, method allocation, and submissions.
+2. **Sprint 6 (Agent Kit & Examples)**: Build storefront reference receiver verifying signed webhooks using `@smpg/sdk`.

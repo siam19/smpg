@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import type { BotContext } from '../context';
 import { merchants } from '../../db/schema';
 import { decryptAesGcm } from '../../services/crypto';
+import { deliverWebhookPayload } from '../../services/webhook';
 import { renderSettingsDashboard } from '../callbacks/menu';
 
 export async function handleSettingsCommand(ctx: BotContext) {
@@ -140,28 +141,7 @@ export async function handleWebhookCommand(ctx: BotContext) {
       },
     });
 
-    const enc = new TextEncoder();
-    const key = await crypto.subtle.importKey(
-      'raw',
-      enc.encode(rawSecret),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign']
-    );
-    const sigBuf = await crypto.subtle.sign('HMAC', key, enc.encode(`${timestamp}.${payload}`));
-    const sigHex = Array.from(new Uint8Array(sigBuf))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
-
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-smpg-signature': `t=${timestamp},v1=${sigHex}`,
-        'x-smpg-event': 'payment.created',
-      },
-      body: payload,
-    });
+    const res = await deliverWebhookPayload(url, rawSecret, 'payment.created', payload);
 
     if (res.ok) {
       pingResult = `🟢 Test ping succeeded (HTTP ${res.status})`;

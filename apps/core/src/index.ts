@@ -4,6 +4,7 @@ import { webhookCallback } from 'grammy';
 import { createDb } from './db';
 import { createBot } from './bot';
 import { finalizeDueDecisions } from './services/decision';
+import { processPendingWebhookDeliveries } from './services/webhook';
 import { authMiddleware, type ApiVariables } from './api/auth';
 import { paymentsRouter } from './api/payments';
 import { checkoutRouter } from './api/checkout';
@@ -67,7 +68,13 @@ export default {
             console.log(`[Cron] Finalized ${finalized} due decisions`);
           }
 
-          // 2. Additional background maintenance (reminders, webhook retries)
+          // 2. Process pending outbound webhook deliveries with retries
+          const webhookResults = await processPendingWebhookDeliveries(db, env, bot);
+          if (webhookResults.processed > 0) {
+            console.log(
+              `[Cron] Processed ${webhookResults.processed} webhooks (${webhookResults.succeeded} succeeded, ${webhookResults.failed} queued for retry)`
+            );
+          }
         } catch (cronErr) {
           console.error('[Cron] Error during scheduled maintenance:', cronErr);
         }
