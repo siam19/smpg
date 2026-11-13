@@ -14,15 +14,21 @@ export function formatSubmittedCard(payment: Payment, wallet?: MerchantWallet | 
     ? `${wallet.number}${wallet.label ? ` (${wallet.label})` : ''}`
     : payment.walletId || 'Assigned Wallet';
 
-  return [
+  const lines = [
     `💸 <b>${methodLabel} payment${orderRef}${lateBadge}</b>`,
     `<b>Amount:</b> ৳${payment.amount.toLocaleString('en-BD')}`,
     `<b>Sent to:</b> <code>${walletDisplay}</code>`,
     `<b>${trxLabel}:</b> <code>${payment.trxId || 'N/A'}</code>`,
-    `<b>From:</b> <code>${payment.senderNumber || 'N/A'}</code>`,
-    '',
-    `<i>Check this ${trxLabel}, amount and sender in your ${methodLabel} app before approving.</i>`,
-  ].join('\n');
+  ];
+
+  if (payment.senderNumber) {
+    lines.push(`<b>From:</b> <code>${payment.senderNumber}</code>`);
+  }
+
+  lines.push('');
+  lines.push(`<i>Check this ${trxLabel} and amount in your ${methodLabel} app before approving.</i>`);
+
+  return lines.join('\n');
 }
 
 /**

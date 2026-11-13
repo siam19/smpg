@@ -497,19 +497,27 @@ checkoutRouter.post('/:id/submit', async (c) => {
     );
   }
 
-  // Validate sender number (11-digit Bangladeshi mobile number)
-  const senderNumber = body.sender_number?.trim();
-  if (!senderNumber || !/^01[3-9]\d{8}$/.test(senderNumber)) {
-    return c.json(
-      {
-        error: {
-          code: 'invalid_request',
-          message: 'Sender number must be a valid 11-digit Bangladeshi mobile number (013-019)',
-          param: 'sender_number',
+  // Validate optional sender number if provided (11-digit Bangladeshi mobile number)
+  let senderNumber: string | null = null;
+  if (
+    body.sender_number !== undefined &&
+    body.sender_number !== null &&
+    String(body.sender_number).trim() !== ''
+  ) {
+    const rawNumber = String(body.sender_number).trim();
+    if (!/^01[3-9]\d{8}$/.test(rawNumber)) {
+      return c.json(
+        {
+          error: {
+            code: 'invalid_request',
+            message: 'Sender number must be a valid 11-digit Bangladeshi mobile number (013-019)',
+            param: 'sender_number',
+          },
         },
-      },
-      400
-    );
+        400
+      );
+    }
+    senderNumber = rawNumber;
   }
 
   // Normalize and validate TrxID / TxnID

@@ -4,7 +4,7 @@ compatibility_date = "2024-11-01"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-PUBLIC_BASE_URL = "https://smpg-core.fhasan-gch.workers.dev"
+PUBLIC_BASE_URL = "https://smpg-checkout.fhasan-gch.workers.dev"
 UNDO_WINDOW_SECONDS = "90"
 SUBMITTED_TTL_HOURS = "72"
 CREATED_TTL_MINUTES = "60"

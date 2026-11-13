@@ -51,7 +51,7 @@ export async function choosePaymentMethod(
 
 export async function submitPaymentDetails(
   paymentId: string,
-  params: { sender_number: string; trx_id: string; honeypot?: string },
+  params: { trx_id: string; sender_number?: string; honeypot?: string },
   fetchFn: typeof fetch = fetch
 ): Promise<SubmitPaymentResult> {
   const baseUrl = getCoreBaseUrl();

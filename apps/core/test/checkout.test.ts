@@ -328,6 +328,50 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       expect(burned.method).toBe('bkash');
     });
 
+    test('submits TrxID without sender_number (TrxID-only submission)', async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await db.insert(payments).values({
+        id: 'pay_trx_only_submit',
+        merchantId: testMerchantId,
+        mode: 'live',
+        amount: 850,
+        status: 'CREATED',
+        method: 'bkash',
+        walletId: 'wal_bkash_main',
+        expiresAt: now + 3600,
+        successUrl: 'https://store.example/success',
+        cancelUrl: 'https://store.example/cancel',
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      const res = await app.request(
+        '/c/pay_trx_only_submit/submit',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            trx_id: 'ONLYTRX789',
+          }),
+        },
+        env as any
+      );
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.status).toBe('SUBMITTED');
+      expect(data.payment_id).toBe('pay_trx_only_submit');
+
+      const updated = await db
+        .select()
+        .from(payments)
+        .where(eq(payments.id, 'pay_trx_only_submit'))
+        .get();
+      expect(updated.status).toBe('SUBMITTED');
+      expect(updated.trxId).toBe('ONLYTRX789');
+      expect(updated.senderNumber).toBeNull();
+    });
+
     test('rejects honeypot bot submissions', async () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({

@@ -50,7 +50,19 @@ Designed, built, and verified the hosted customer checkout web application in `a
 1. **Production Build**: Executed `bun run build` in `apps/checkout` using Vite + `@sveltejs/adapter-cloudflare` — SSR bundle and static client assets built in under 400ms.
 2. **Type Safety & Diagnostics**: Executed `bun run check` in `apps/checkout` (`svelte-check --tsconfig ./tsconfig.json`) — **0 errors, 0 warnings**.
 3. **Workspace Full Typecheck**: Ran `bun run typecheck` across all 3 workspaces (`@smpg/core`, `@smpg/checkout`, `send-money-payment-gateway`) — **0 errors, 0 warnings**.
-4. **All Unit & Integration Tests**: Ran `bun test` across the workspace — all **50 tests** pass.
+4. **All Unit & Integration Tests**: Ran `bun test` across the workspace — all **51 tests** pass (including TrxID-only submissions).
+5. **Cloudflare Deployment**: Deployed `smpg-checkout` and `smpg-core` workers live to Cloudflare Workers edge.
+
+---
+
+### UX Refinements: Frictionless TrxID-Only Submission
+- **Why changed**: In bKash and Nagad personal Send Money, customer phone numbers add unnecessary friction for buyers and are not needed by sellers to verify payments against their SMS/statement (the TrxID and Amount are sufficient).
+- **Files updated**:
+  - [`apps/checkout/src/routes/c/[id]/+page.svelte`](file:///home/bast0k/projects/smpg/apps/checkout/src/routes/c/[id]/+page.svelte): Removed customer phone number input field; customers now only enter the TrxID.
+  - [`apps/checkout/src/lib/api.ts`](file:///home/bast0k/projects/smpg/apps/checkout/src/lib/api.ts): Made `sender_number` optional in `submitPaymentDetails`.
+  - [`apps/checkout/src/routes/+layout.ts`](file:///home/bast0k/projects/smpg/apps/checkout/src/routes/+layout.ts): Configured SPA client-rendering mode (`ssr = false`) to eliminate workers.dev-to-workers.dev loopback limitations on Cloudflare.
+  - [`apps/core/src/api/checkout.ts`](file:///home/bast0k/projects/smpg/apps/core/src/api/checkout.ts): Made `sender_number` optional in `POST /c/:id/submit`; if omitted, the TrxID is validated and burned without requiring a phone number.
+  - [`apps/core/src/bot/views/cards.ts`](file:///home/bast0k/projects/smpg/apps/core/src/bot/views/cards.ts): Updated Telegram submission card to display TrxID cleanly without `From: N/A` when phone number is omitted.
 
 ---
 
