@@ -3,7 +3,9 @@ import type {
   CreatePaymentParams,
   ListPaymentsParams,
   Payment,
+  PaymentMethod,
   SMPGOptions,
+  SubmitPaymentParams,
   WebhookEvent,
 } from './types';
 import { constructEvent, VerifySignatureOptions } from './webhooks';
@@ -141,6 +143,26 @@ export class SMPG {
     cancel: async (paymentId: string): Promise<Payment> => {
       return this.request<Payment>(`/v1/payments/${encodeURIComponent(paymentId)}/cancel`, {
         method: 'POST',
+      });
+    },
+
+    /**
+     * Select or change the payment method for a CREATED payment.
+     */
+    selectMethod: async (paymentId: string, method: PaymentMethod): Promise<Payment> => {
+      return this.request<Payment>(`/v1/payments/${encodeURIComponent(paymentId)}/method`, {
+        method: 'POST',
+        body: JSON.stringify({ method }),
+      });
+    },
+
+    /**
+     * Submit TrxID on behalf of a customer via authenticated merchant API.
+     */
+    submit: async (paymentId: string, params: SubmitPaymentParams): Promise<Payment> => {
+      return this.request<Payment>(`/v1/payments/${encodeURIComponent(paymentId)}/submit`, {
+        method: 'POST',
+        body: JSON.stringify(params),
       });
     },
   };

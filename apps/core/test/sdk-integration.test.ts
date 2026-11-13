@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from 'bun:test';
-import { SMPG } from '../../../packages/sdk/src/index';
+import { SMPG, SMPGCheckout } from '../../../packages/sdk/src/index';
 import { app } from '../src/index';
 import { createTestD1 } from './helpers/mock-d1';
 import { apiKeys, merchants, merchantWallets } from '../src/db/schema';
@@ -21,7 +21,7 @@ describe('SDK Integration with Core Payments API', () => {
     env = {
       DB: d1,
       BUCKET: {} as any,
-      TELEGRAM_BOT_TOKEN: 'mock_token',
+      TELEGRAM_BOT_TOKEN: '',
       TELEGRAM_WEBHOOK_SECRET: 'mock_webhook_secret',
       ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
       PUBLIC_BASE_URL: 'https://smpg-core.workers.dev',
@@ -109,13 +109,15 @@ describe('SDK Integration with Core Payments API', () => {
       expect(payment.amount).toBe(1250);
       expect(payment.status).toBe('CREATED');
       expect(payment.method).toBe('bkash');
+      expect(payment.assigned_wallet?.number).toBe('01700112233');
       expect(payment.checkout_url).toBe(`https://smpg-core.workers.dev/c/${payment.id}`);
       expect(payment.metadata).toEqual({ plan: 'pro' });
 
-      // 2. Retrieve Payment
+      // 2. Retrieve Payment (verifying assigned_wallet)
       const retrieved = await smpg.payments.retrieve(payment.id);
       expect(retrieved.id).toBe(payment.id);
       expect(retrieved.external_order_id).toBe('ORD-SDK-001');
+      expect(retrieved.assigned_wallet?.number).toBe('01700112233');
 
       // 3. List Payments
       const list = await smpg.payments.list({ external_order_id: 'ORD-SDK-001' });
@@ -128,6 +130,89 @@ describe('SDK Integration with Core Payments API', () => {
 
       const afterCancel = await smpg.payments.retrieve(payment.id);
       expect(afterCancel.status).toBe('CANCELLED');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('SDK supports embedded checkout flow: create without method -> selectMethod -> submit TrxID', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const parsedUrl = new URL(url);
+      const relativePath = parsedUrl.pathname + parsedUrl.search;
+      return app.request(relativePath, init, env as any);
+    };
+
+    try {
+      const smpg = new SMPG(liveKey, {
+        baseUrl: 'https://smpg-core.workers.dev',
+      });
+
+      // 1. Create payment without method (customer is at /checkout box)
+      const payment = await smpg.payments.create({
+        amount: 2100,
+        external_order_id: 'ORD-CUSTOM-CHECKOUT-1',
+        success_url: 'https://myshop.com/orders/thanks',
+      });
+
+      expect(payment.method).toBeNull();
+      expect(payment.assigned_wallet).toBeNull();
+      expect(payment.available_methods).toContain('bkash');
+
+      // 2. Customer selects bKash in merchant's custom checkout widget
+      const withMethod = await smpg.payments.selectMethod(payment.id, 'bkash');
+      expect(withMethod.method).toBe('bkash');
+      expect(withMethod.assigned_wallet?.number).toBe('01700112233');
+
+      // 3. Customer submits TrxID via merchant's server
+      const submitted = await smpg.payments.submit(payment.id, {
+        trx_id: 'SDKTRX998877',
+      });
+
+      expect(submitted.status).toBe('SUBMITTED');
+      expect(submitted.trx_id).toBe('SDKTRX998877');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('SMPGCheckout client-safe helper queries session and submits without secret API key', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const parsedUrl = new URL(url);
+      const relativePath = parsedUrl.pathname + parsedUrl.search;
+      return app.request(relativePath, init, env as any);
+    };
+
+    try {
+      const smpg = new SMPG(liveKey, {
+        baseUrl: 'https://smpg-core.workers.dev',
+      });
+
+      // Create payment
+      const payment = await smpg.payments.create({
+        amount: 950,
+        method: 'bkash',
+        external_order_id: 'ORD-CLIENT-CHECKOUT-1',
+        success_url: 'https://myshop.com/orders/thanks',
+      });
+
+      // Frontend browser uses keyless SMPGCheckout
+      const checkout = new SMPGCheckout('https://smpg-core.workers.dev');
+      const session = await checkout.getSession(payment.id);
+      expect(session.id).toBe(payment.id);
+      expect(session.assigned_wallet?.number).toBe('01700112233');
+
+      const submitResult = await checkout.submit(payment.id, {
+        trx_id: 'CLIENTTRX456',
+      });
+      expect(submitResult.status).toBe('SUBMITTED');
+      expect(submitResult.payment_id).toBe(payment.id);
+
+      const status = await checkout.getStatus(payment.id);
+      expect(status.status).toBe('SUBMITTED');
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -57,16 +57,6 @@ bun run typecheck
 bun test
 ```
 
----
-
-## Documentation
-
-* [Product Specification](docs/Product%20Specification%20-%20Send%20Money%20Payment%20Gateway.md)
-* [SMPG Master Plan](docs/SMPG_Plan.md)
-* [OpenAPI 3.1 Spec](docs/openapi.yaml)
-* [Sprint Logs](docs/sprints/0.%20monorepo%20setup/log.md)
-
----
 
 ## License
 

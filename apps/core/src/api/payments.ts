@@ -1,19 +1,61 @@
 import { Hono } from 'hono';
-import { and, desc, eq, lt } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt } from 'drizzle-orm';
 import { createDb } from '../db';
 import {
+  merchantWallets,
   paymentEvents,
   payments,
+  trxSubmissions,
   webhookDeliveries,
+  type MerchantWallet,
   type Payment,
 } from '../db/schema';
 import { generatePrefixedId } from '../services/crypto';
-import { assignWalletForPayment } from '../services/wallet';
+import { assignWalletForPayment, getMerchantWalletsWithUsage } from '../services/wallet';
 import { finalizeDueDecisions } from '../services/decision';
+import { createBot } from '../bot';
+import { sendPaymentSubmissionNotification } from '../services/notification';
 import type { Env, PaymentMethod, PaymentStatus } from '../types';
 import type { ApiVariables } from './auth';
 
-export function formatPaymentResponse(row: Payment, publicBaseUrl: string) {
+export async function getAvailableMethodsForMerchant(
+  db: any,
+  merchantId: string,
+  amount: number,
+  codEnabled: number
+): Promise<PaymentMethod[]> {
+  const methods: PaymentMethod[] = [];
+  if (codEnabled === 1) {
+    methods.push('cod');
+  }
+
+  const bkashWallets = await getMerchantWalletsWithUsage(db, merchantId, 'bkash');
+  if (
+    bkashWallets.some(
+      (w) => w.wallet.active === 1 && w.reservedToday + amount <= w.wallet.dailyLimit
+    )
+  ) {
+    methods.push('bkash');
+  }
+
+  const nagadWallets = await getMerchantWalletsWithUsage(db, merchantId, 'nagad');
+  if (
+    nagadWallets.some(
+      (w) => w.wallet.active === 1 && w.reservedToday + amount <= w.wallet.dailyLimit
+    )
+  ) {
+    methods.push('nagad');
+  }
+
+  return methods;
+}
+
+export function formatPaymentResponse(
+  row: Payment,
+  publicBaseUrl: string,
+  wallet?: MerchantWallet | null,
+  availableMethods?: PaymentMethod[]
+) {
   let metadata: Record<string, unknown> | null = null;
   if (row.metadata) {
     try {
@@ -30,6 +72,15 @@ export function formatPaymentResponse(row: Payment, publicBaseUrl: string) {
     external_order_id: row.externalOrderId ?? null,
     method: row.method as PaymentMethod | null,
     wallet_id: row.walletId ?? null,
+    assigned_wallet: wallet
+      ? {
+          id: wallet.id,
+          provider: wallet.provider as PaymentMethod,
+          number: wallet.number,
+          label: wallet.label ?? null,
+        }
+      : null,
+    available_methods: availableMethods ?? undefined,
     amount: row.amount,
     status: row.status as PaymentStatus,
     trx_id: row.trxId ?? null,
@@ -208,6 +259,7 @@ paymentsRouter.post('/', async (c) => {
 
   // 3. Process Method & Wallet Allocation
   let assignedWalletId: string | null = null;
+  let assignedWallet: MerchantWallet | null = null;
   if (body.method === 'bkash' || body.method === 'nagad') {
     const wallet = await assignWalletForPayment(
       db,
@@ -229,6 +281,7 @@ paymentsRouter.post('/', async (c) => {
       );
     }
     assignedWalletId = wallet.id;
+    assignedWallet = wallet;
   } else if (body.method === 'cod') {
     if (merchant.codEnabled === 0) {
       return c.json(
@@ -291,7 +344,17 @@ paymentsRouter.post('/', async (c) => {
     createdAt: now,
   });
 
-  return c.json(formatPaymentResponse(paymentRecord, c.env.PUBLIC_BASE_URL), 201);
+  const availableMethods = await getAvailableMethodsForMerchant(
+    db,
+    merchant.id,
+    body.amount,
+    merchant.codEnabled
+  );
+
+  return c.json(
+    formatPaymentResponse(paymentRecord, c.env.PUBLIC_BASE_URL, assignedWallet, availableMethods),
+    201
+  );
 });
 
 // GET /v1/payments/:id (Retrieve Payment)
@@ -337,7 +400,27 @@ paymentsRouter.get('/:id', async (c) => {
     }
   }
 
-  return c.json(formatPaymentResponse(payment, c.env.PUBLIC_BASE_URL), 200);
+  let wallet: MerchantWallet | null = null;
+  if (payment.walletId) {
+    wallet =
+      (await db
+        .select()
+        .from(merchantWallets)
+        .where(eq(merchantWallets.id, payment.walletId))
+        .get()) ?? null;
+  }
+
+  const availableMethods = await getAvailableMethodsForMerchant(
+    db,
+    merchant.id,
+    payment.amount,
+    merchant.codEnabled
+  );
+
+  return c.json(
+    formatPaymentResponse(payment, c.env.PUBLIC_BASE_URL, wallet, availableMethods),
+    200
+  );
 });
 
 // GET /v1/payments (List Payments)
@@ -490,4 +573,367 @@ paymentsRouter.post('/:id/cancel', async (c) => {
   };
 
   return c.json(formatPaymentResponse(updated, c.env.PUBLIC_BASE_URL), 200);
+});
+
+// POST /v1/payments/:id/method (Set/Update payment method via REST API)
+paymentsRouter.post('/:id/method', async (c) => {
+  const merchant = c.get('merchant');
+  const db = createDb(c.env.DB);
+  const paymentId = c.req.param('id');
+
+  const payment = await db
+    .select()
+    .from(payments)
+    .where(and(eq(payments.id, paymentId), eq(payments.merchantId, merchant.id)))
+    .get();
+
+  if (!payment) {
+    return c.json(
+      { error: { code: 'not_found', message: `Payment not found: ${paymentId}`, param: 'id' } },
+      404
+    );
+  }
+
+  if (payment.status !== 'CREATED') {
+    return c.json(
+      {
+        error: {
+          code: 'invalid_state',
+          message: `Cannot change method for payment in ${payment.status} status. Method selection is only allowed in CREATED status.`,
+        },
+      },
+      400
+    );
+  }
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: { code: 'invalid_request', message: 'Malformed JSON payload' } }, 400);
+  }
+
+  const method = body.method as PaymentMethod;
+  if (!['bkash', 'nagad', 'cod'].includes(method)) {
+    return c.json(
+      {
+        error: {
+          code: 'invalid_request',
+          message: "method must be 'bkash', 'nagad', or 'cod'",
+          param: 'method',
+        },
+      },
+      400
+    );
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+
+  if (method === 'cod') {
+    if (merchant.codEnabled === 0) {
+      return c.json(
+        {
+          error: {
+            code: 'method_not_enabled',
+            message: 'Cash on Delivery (COD) is disabled for this merchant',
+          },
+        },
+        400
+      );
+    }
+
+    await db
+      .update(payments)
+      .set({
+        method: 'cod',
+        status: 'CONFIRMED',
+        updatedAt: now,
+      })
+      .where(eq(payments.id, payment.id));
+
+    await db.insert(paymentEvents).values({
+      paymentId: payment.id,
+      fromStatus: 'CREATED',
+      toStatus: 'CONFIRMED',
+      actor: 'merchant_api',
+      note: 'Payment method set to COD via REST API',
+      createdAt: now,
+    });
+
+    const updated = (await db.select().from(payments).where(eq(payments.id, payment.id)).get())!;
+    return c.json(formatPaymentResponse(updated, c.env.PUBLIC_BASE_URL, null), 200);
+  }
+
+  // bKash or Nagad: allocate active wallet
+  const wallet = await assignWalletForPayment(
+    db,
+    merchant.id,
+    method,
+    payment.amount,
+    merchant.rotationStrategy as 'balanced' | 'fill_first'
+  );
+
+  if (!wallet) {
+    return c.json(
+      {
+        error: {
+          code: 'no_wallet_available',
+          message: `No active ${method} wallet has sufficient daily limit capacity for ৳${payment.amount}`,
+        },
+      },
+      400
+    );
+  }
+
+  await db
+    .update(payments)
+    .set({
+      method,
+      walletId: wallet.id,
+      updatedAt: now,
+    })
+    .where(eq(payments.id, payment.id));
+
+  await db.insert(paymentEvents).values({
+    paymentId: payment.id,
+    fromStatus: 'CREATED',
+    toStatus: 'CREATED',
+    actor: 'merchant_api',
+    note: `Payment method set to ${method} (wallet: ${wallet.number}) via REST API`,
+    createdAt: now,
+  });
+
+  const updated = (await db.select().from(payments).where(eq(payments.id, payment.id)).get())!;
+  return c.json(formatPaymentResponse(updated, c.env.PUBLIC_BASE_URL, wallet), 200);
+});
+
+// POST /v1/payments/:id/submit (Submit TrxID via authenticated REST API)
+paymentsRouter.post('/:id/submit', async (c) => {
+  const merchant = c.get('merchant');
+  const db = createDb(c.env.DB);
+  const paymentId = c.req.param('id');
+
+  const payment = await db
+    .select()
+    .from(payments)
+    .where(and(eq(payments.id, paymentId), eq(payments.merchantId, merchant.id)))
+    .get();
+
+  if (!payment) {
+    return c.json(
+      { error: { code: 'not_found', message: `Payment not found: ${paymentId}`, param: 'id' } },
+      404
+    );
+  }
+
+  if (payment.status === 'PAID') {
+    return c.json({ error: { code: 'invalid_state', message: 'Payment is already PAID' } }, 400);
+  }
+  if (payment.status === 'CANCELLED') {
+    return c.json(
+      { error: { code: 'invalid_state', message: 'Payment session has been CANCELLED' } },
+      400
+    );
+  }
+  if (payment.status === 'SUBMITTED') {
+    return c.json(
+      {
+        error: {
+          code: 'invalid_state',
+          message: 'Payment details have already been submitted and are pending verification',
+        },
+      },
+      400
+    );
+  }
+  if (payment.status !== 'CREATED' && payment.status !== 'REJECTED') {
+    return c.json(
+      { error: { code: 'invalid_state', message: `Cannot submit payment in ${payment.status} status` } },
+      400
+    );
+  }
+
+  if (payment.attempts >= 3) {
+    return c.json(
+      { error: { code: 'too_many_attempts', message: 'Maximum submission attempts (3) exceeded' } },
+      400
+    );
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const lateSubmitHours = parseInt(c.env.LATE_SUBMIT_HOURS || '24', 10);
+  let isLate = 0;
+  if (now > payment.expiresAt) {
+    if (now > payment.expiresAt + lateSubmitHours * 3600) {
+      return c.json(
+        {
+          error: {
+            code: 'payment_expired',
+            message: 'Payment expired outside 24h grace window',
+          },
+        },
+        400
+      );
+    }
+    isLate = 1;
+  }
+
+  if (!payment.method || (payment.method !== 'bkash' && payment.method !== 'nagad')) {
+    return c.json(
+      {
+        error: {
+          code: 'invalid_state',
+          message: 'Please select a mobile payment method (bKash or Nagad) before submitting TrxID',
+        },
+      },
+      400
+    );
+  }
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: { code: 'invalid_request', message: 'Malformed JSON payload' } }, 400);
+  }
+
+  // Validate optional sender number
+  let senderNumber: string | null = null;
+  if (
+    body.sender_number !== undefined &&
+    body.sender_number !== null &&
+    String(body.sender_number).trim() !== ''
+  ) {
+    const rawNumber = String(body.sender_number).trim();
+    if (!/^01[3-9]\d{8}$/.test(rawNumber)) {
+      return c.json(
+        {
+          error: {
+            code: 'invalid_request',
+            message: 'Invalid 11-digit Bangladeshi mobile number',
+            param: 'sender_number',
+          },
+        },
+        400
+      );
+    }
+    senderNumber = rawNumber;
+  }
+
+  // Validate TrxID
+  const trxId = body.trx_id ? String(body.trx_id).replace(/\s+/g, '').toUpperCase() : '';
+  if (!trxId || !/^[A-Z0-9]{6,30}$/.test(trxId)) {
+    return c.json(
+      {
+        error: {
+          code: 'trx_id_invalid_format',
+          message: 'Invalid TrxID format. Must be 6-30 alphanumeric characters.',
+          param: 'trx_id',
+        },
+      },
+      400
+    );
+  }
+
+  // Burn TrxID in live mode
+  if (payment.mode === 'live') {
+    const existing = await db
+      .select()
+      .from(trxSubmissions)
+      .where(
+        and(
+          eq(trxSubmissions.method, payment.method),
+          eq(trxSubmissions.trxId, trxId),
+          eq(trxSubmissions.mode, 'live')
+        )
+      )
+      .get();
+
+    if (existing) {
+      return c.json(
+        {
+          error: {
+            code: 'trx_id_already_used',
+            message: 'TrxID has already been submitted for another payment',
+            param: 'trx_id',
+          },
+        },
+        400
+      );
+    }
+  }
+
+  // 1. Burn TrxID in trx_submissions
+  await db.insert(trxSubmissions).values({
+    paymentId: payment.id,
+    method: payment.method,
+    trxId,
+    senderNumber,
+    outcome: 'pending',
+    mode: payment.mode,
+    createdAt: now,
+  });
+
+  // 2. Update payment
+  const newAttempts = payment.attempts + 1;
+  await db
+    .update(payments)
+    .set({
+      status: 'SUBMITTED',
+      trxId,
+      senderNumber,
+      attempts: newAttempts,
+      lateSubmission: isLate,
+      pendingDecision: null,
+      decisionEffectiveAt: null,
+      updatedAt: now,
+    })
+    .where(eq(payments.id, payment.id));
+
+  // 3. Record audit event
+  await db.insert(paymentEvents).values({
+    paymentId: payment.id,
+    fromStatus: payment.status,
+    toStatus: 'SUBMITTED',
+    actor: 'merchant_api',
+    note: isLate ? 'TrxID submitted via REST API (late)' : 'TrxID submitted via REST API',
+    createdAt: now,
+  });
+
+  const updated = (await db.select().from(payments).where(eq(payments.id, payment.id)).get())!;
+
+  // 4. Dispatch Telegram card
+  let wallet: MerchantWallet | null = null;
+  if (updated.walletId) {
+    wallet =
+      (await db
+        .select()
+        .from(merchantWallets)
+        .where(eq(merchantWallets.id, updated.walletId))
+        .get()) ?? null;
+  }
+
+  if (c.env.TELEGRAM_BOT_TOKEN) {
+    try {
+      const bot = createBot(c.env, db);
+      const messageId = await sendPaymentSubmissionNotification(bot, merchant, updated, wallet);
+      if (messageId) {
+        let existingMeta: Record<string, any> = {};
+        if (updated.metadata) {
+          try {
+            existingMeta = JSON.parse(updated.metadata);
+          } catch {}
+        }
+        existingMeta.telegram_message_id = messageId;
+        await db
+          .update(payments)
+          .set({ metadata: JSON.stringify(existingMeta) })
+          .where(eq(payments.id, payment.id));
+      }
+    } catch (err) {
+      console.error('[Payments] Telegram notification dispatch failed:', err);
+    }
+  }
+
+  return c.json(formatPaymentResponse(updated, c.env.PUBLIC_BASE_URL, wallet), 200);
 });
