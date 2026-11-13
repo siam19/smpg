@@ -1,0 +1,87 @@
+# SMPG (Send Money Payment Gateway)
+
+> Open-source, multi-tenant payment gateway enabling Bangladeshi merchants to accept bKash Send Money, Nagad Send Money, and Cash on Delivery (COD) without requiring commercial trade licenses.
+
+## Core Concepts
+- **Asynchronous Verification**: Customers send money from personal mobile banking apps and submit the Transaction ID (TrxID). Merchants verify the TrxID in their Telegram bot and tap Approve or Reject.
+- **Undo Grace Period**: Decisions have a 90-second undo window. Payments transition to `PAID` or `REJECTED` only after 90 seconds.
+- **Never Trust Redirects**: The customer `success_url` only indicates submission. The merchant storefront MUST NOT mark orders as paid until the signed `payment.paid` webhook arrives.
+
+## State Machine
+```
+[CREATED] ──(select COD)────────────> [CONFIRMED]
+    │
+ (submit TrxID)
+    ▼
+[SUBMITTED] ──(approve + 60s)───────> [PAID] (terminal)
+    │
+ (reject + 90s)
+    ▼
+[REJECTED] ──(resubmit TrxID, max 3)─> [SUBMITTED]
+```
+
+## Quick Installation
+```bash
+npm install @smpg/sdk
+# or
+bun add @smpg/sdk
+```
+
+## Server SDK Usage
+```typescript
+import { SMPG } from '@smpg/sdk';
+
+const smpg = new SMPG(process.env.SMPG_SECRET_KEY!, {
+  baseUrl: process.env.SMPG_CORE_URL!, // e.g. https://smpg-core.<account>.workers.dev
+  webhookSecret: process.env.SMPG_WEBHOOK_SECRET,
+});
+
+// 1. Create Payment Session
+const payment = await smpg.payments.create({
+  amount: 1500,
+  external_order_id: 'ORD-1042',
+  success_url: 'https://store.example/orders/ORD-1042/thanks',
+  cancel_url: 'https://store.example/cart',
+});
+
+// 2. Headless Checkout: Select method & submit TrxID from server
+const withMethod = await smpg.payments.selectMethod(payment.id, 'bkash');
+console.log('Send money to:', withMethod.assigned_wallet?.number);
+
+await smpg.payments.submit(payment.id, { trx_id: '9K3L2M1ABC' });
+```
+
+## Browser-Safe Checkout (No Secret Key)
+```typescript
+import { SMPGCheckout } from '@smpg/sdk';
+
+const checkout = new SMPGCheckout('https://smpg-core.<account>.workers.dev');
+const session = await checkout.getSession('pay_xxx');
+await checkout.submit('pay_xxx', { trx_id: '9K3L2M1ABC' });
+```
+
+## Webhook Signature Verification
+```typescript
+// Important: verify against RAW request body string
+const signatureHeader = req.headers['smpg-signature'];
+const rawBody = await req.text(); // or raw Buffer
+
+const event = await smpg.webhooks.constructEvent(rawBody, signatureHeader);
+
+switch (event.type) {
+  case 'payment.paid':
+    await markOrderPaid(event.data.external_order_id);
+    break;
+  case 'payment.confirmed':
+    await markOrderConfirmed(event.data.external_order_id);
+    break;
+  case 'payment.rejected':
+    await notifyCustomerRetry(event.data.external_order_id, event.data.retry_url);
+    break;
+}
+```
+
+## Documentation Links
+- Full Documentation Bundle: [llms-full.txt](llms-full.txt)
+- OpenAPI 3.1 Spec: [openapi.yaml](openapi.yaml)
+- Agent Prompt Guide: [AGENTS.md](../AGENTS.md)

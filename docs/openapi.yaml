@@ -133,6 +133,190 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
 
+  /v1/payments/{id}/method:
+    post:
+      summary: Set or change payment method
+      description: Sets payment method (bkash, nagad, or cod) on a CREATED payment and allocates an active wallet.
+      operationId: setPaymentMethod
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [method]
+              properties:
+                method:
+                  $ref: '#/components/schemas/PaymentMethod'
+      responses:
+        '200':
+          description: Payment method updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/payments/{id}/submit:
+    post:
+      summary: Submit customer TrxID via authenticated API
+      description: Submits TrxID on behalf of a customer from the merchant backend, burns TrxID in live mode, transitions to SUBMITTED, and dispatches Telegram notification.
+      operationId: submitPaymentTrx
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [trx_id]
+              properties:
+                trx_id:
+                  type: string
+                  example: 9K3L2M1ABC
+                sender_number:
+                  type: string
+                  example: 01712345678
+      responses:
+        '200':
+          description: Payment submitted for verification
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Payment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /c/{id}/data:
+    get:
+      summary: Get public checkout session data
+      description: Returns store branding, assigned wallet number, amount, and allowed methods for the hosted or embedded checkout interface.
+      operationId: getPublicCheckoutData
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Public checkout session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutSessionData'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /c/{id}/method:
+    post:
+      summary: Select payment method from checkout page
+      operationId: selectPublicPaymentMethod
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [method]
+              properties:
+                method:
+                  $ref: '#/components/schemas/PaymentMethod'
+      responses:
+        '200':
+          description: Method chosen, wallet assigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  method:
+                    $ref: '#/components/schemas/PaymentMethod'
+                  status:
+                    type: string
+                  assigned_wallet:
+                    $ref: '#/components/schemas/AssignedWallet'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /c/{id}/submit:
+    post:
+      summary: Customer submits TrxID
+      description: Customer submits transaction ID from hosted checkout or custom checkout box.
+      operationId: submitPublicPaymentDetails
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [trx_id]
+              properties:
+                trx_id:
+                  type: string
+                  example: 9K3L2M1ABC
+                sender_number:
+                  type: string
+                  example: 01712345678
+                website_url:
+                  type: string
+                  description: Honeypot field (must remain empty)
+      responses:
+        '200':
+          description: Payment details received
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: SUBMITTED
+                  message:
+                    type: string
+                  payment_id:
+                    type: string
+                  redirect_url:
+                    type: string
+                  attempts_remaining:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
   /c/{id}/status:
     get:
       summary: Get payment status for checkout/thank-you page
@@ -229,6 +413,23 @@ components:
           type: object
           additionalProperties: true
 
+    AssignedWallet:
+      type: object
+      required: [id, provider, number]
+      properties:
+        id:
+          type: string
+          example: wal_bkash_main
+        provider:
+          $ref: '#/components/schemas/PaymentMethod'
+        number:
+          type: string
+          example: 01785863769
+        label:
+          type: string
+          nullable: true
+          example: Main Personal
+
     Payment:
       type: object
       required:
@@ -251,6 +452,14 @@ components:
           type: string
         method:
           $ref: '#/components/schemas/PaymentMethod'
+        wallet_id:
+          type: string
+        assigned_wallet:
+          $ref: '#/components/schemas/AssignedWallet'
+        available_methods:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaymentMethod'
         amount:
           type: integer
           example: 1250
@@ -287,6 +496,82 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    CheckoutSessionData:
+      type: object
+      properties:
+        id:
+          type: string
+        amount:
+          type: integer
+        currency:
+          type: string
+          example: BDT
+        external_order_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/PaymentStatus'
+        store:
+          type: object
+          properties:
+            name:
+              type: string
+            brand_color:
+              type: string
+            logo_key:
+              type: string
+              nullable: true
+        available_methods:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaymentMethod'
+        method:
+          $ref: '#/components/schemas/PaymentMethod'
+        assigned_wallet:
+          $ref: '#/components/schemas/AssignedWallet'
+        trx_id:
+          type: string
+        sender_number:
+          type: string
+        attempts:
+          type: integer
+        attempts_remaining:
+          type: integer
+        expires_at:
+          type: string
+          format: date-time
+        is_expired:
+          type: boolean
+        can_late_submit:
+          type: boolean
+        success_url:
+          type: string
+        cancel_url:
+          type: string
+
+    WebhookEvent:
+      type: object
+      required: [id, type, created, data]
+      properties:
+        id:
+          type: string
+          example: evt_8192abc
+        type:
+          type: string
+          enum:
+            - payment.created
+            - payment.submitted
+            - payment.confirmed
+            - payment.paid
+            - payment.rejected
+            - payment.reopened
+            - payment.expired
+            - payment.cancelled
+        created:
+          type: integer
+          description: Unix timestamp
+        data:
+          $ref: '#/components/schemas/Payment'
 
     ErrorResponse:
       type: object

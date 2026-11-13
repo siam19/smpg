@@ -19,6 +19,7 @@ import {
 } from './commands/settings';
 import { handleKeysCommand, handleStorePauseCommand } from './commands/keys';
 import { handlePaymentsListCommand, handleReopenCommand } from './commands/payments';
+import { handleTestCommand } from './commands/test';
 import { handleDecisionCallback } from './callbacks/decision';
 import { handleUndoCallback } from './callbacks/undo';
 import { handleMenuCallback } from './callbacks/menu';
@@ -97,6 +98,7 @@ export function createBot(env: Env, db: Database): Bot<BotContext> {
   bot.command('pause', requireMerchant, (ctx) => handleStorePauseCommand(ctx, true));
   bot.command('resume', requireMerchant, (ctx) => handleStorePauseCommand(ctx, false));
   bot.command('reopen', requireMerchant, handleReopenCommand);
+  bot.command('test', requireMerchant, handleTestCommand);
 
   // Payment decision callbacks: v1:approve:pay_123:nonce
   bot.callbackQuery(/^v1:(approve|reject|confirm|cancel):([^:]+):.+$/, async (ctx) => {
