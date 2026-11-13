@@ -1,6 +1,6 @@
 # Sprint 5: Hosted Checkout Frontend (`apps/checkout`)
 
-> **Status**: Planned  
+> **Status**: Completed  
 > **Reference**: [SMPG Master Plan - Section 3 (Customer Experience), Section 12 (Hosted Checkout Page)](../../SMPG_Plan.md)
 
 ---
