@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { eq } from 'drizzle-orm';
 import { app } from '../src/index';
+import { createTestD1 } from './helpers/mock-d1';
+import { applyPaymentDecision } from '../src/services/decision';
 import {
   appendFinalDecisionStatus,
   appendGracePeriodStatus,
@@ -11,7 +14,7 @@ import {
   createCreateStoreKeyboard,
   createNidQuestionKeyboard,
 } from '../src/bot/views/keyboards';
-import type { Payment, MerchantWallet } from '../src/db/schema';
+import { merchants, payments, type Payment, type MerchantWallet } from '../src/db/schema';
 
 describe('Telegram Bot & Views', () => {
   test('Webhook rejects requests with missing or invalid secret token', async () => {
@@ -88,6 +91,9 @@ describe('Telegram Bot & Views', () => {
     expect(bkashCard).toContain('01799887766 (Main bKash)');
     expect(bkashCard).toContain('TrxID:');
     expect(bkashCard).toContain('9K3L2M1ABC');
+    expect(bkashCard).not.toContain('Sent to:'); // Prevents Android "Open Maps" action
+    expect(bkashCard).toContain('Wallet:');
+    expect(bkashCard).toContain('Reply <b>"ok"</b> (or <b>"y"</b>) to approve');
 
     // 2. Nagad Card with Late Submission
     const mockNagadPayment: Payment = {
@@ -143,5 +149,58 @@ describe('Telegram Bot & Views', () => {
     expect(colorKb.inline_keyboard.length).toBe(1);
     expect(colorKb.inline_keyboard[0][0].text).toBe('⏭ Skip');
     expect(colorKb.inline_keyboard[0][0].callback_data).toBe('onboarding:skip_color');
+  });
+
+  test('applyPaymentDecision updates pending decision and starts undo countdown', async () => {
+    const { d1, db } = createTestD1();
+    const now = Math.floor(Date.now() / 1000);
+    const merchantId = 'mrc_quick_reply_test';
+
+    await db.insert(merchants).values({
+      id: merchantId,
+      telegramChatId: 99887766,
+      storeName: 'Test Store',
+      webhookSecret: 'secret_123',
+      createdAt: now,
+    });
+
+    await db.insert(payments).values({
+      id: 'pay_reply_to_approve',
+      merchantId,
+      mode: 'live',
+      amount: 1500,
+      status: 'SUBMITTED',
+      method: 'bkash',
+      trxId: 'TXN12345678',
+      expiresAt: now + 3600,
+      successUrl: 'https://store.example/success',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const env = {
+      DB: d1,
+      UNDO_WINDOW_SECONDS: '90',
+    } as any;
+
+    // Approve
+    const res = await applyPaymentDecision({
+      db,
+      env,
+      merchantId,
+      telegramChatId: 99887766,
+      paymentId: 'pay_reply_to_approve',
+      action: 'approve',
+      actorName: '@seller',
+      actorDb: 'telegram:@seller',
+    });
+
+    expect(res.success).toBe(true);
+    expect(res.payment?.pendingDecision).toBe('approve');
+    expect(res.effectiveAt).toBeGreaterThan(now);
+
+    const updated = await db.select().from(payments).where(eq(payments.id, 'pay_reply_to_approve')).get();
+    expect(updated.pendingDecision).toBe('approve');
+    expect(updated.decisionActor).toBe('telegram:@seller');
   });
 });

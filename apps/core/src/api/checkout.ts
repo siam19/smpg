@@ -282,12 +282,25 @@ checkoutRouter.post('/:id/method', async (c) => {
     if (c.env.TELEGRAM_BOT_TOKEN) {
       try {
         const bot = createBot(c.env, db);
-        await sendCodNotification(bot, merchant, {
+        const messageId = await sendCodNotification(bot, merchant, {
           ...payment,
           method: 'cod',
           status: 'CONFIRMED',
           updatedAt: now,
         });
+        if (messageId) {
+          let existingMeta: Record<string, any> = {};
+          if (payment.metadata) {
+            try {
+              existingMeta = JSON.parse(payment.metadata);
+            } catch {}
+          }
+          existingMeta.telegram_message_id = messageId;
+          await db
+            .update(payments)
+            .set({ metadata: JSON.stringify(existingMeta) })
+            .where(eq(payments.id, payment.id));
+        }
       } catch (err) {
         console.error('[Checkout] Telegram COD notification dispatch failed:', err);
       }
@@ -639,7 +652,20 @@ checkoutRouter.post('/:id/submit', async (c) => {
         ? await db.select().from(merchantWallets).where(eq(merchantWallets.id, payment.walletId)).get()
         : null;
 
-      await sendPaymentSubmissionNotification(bot, merchant, updatedPayment, wallet);
+      const messageId = await sendPaymentSubmissionNotification(bot, merchant, updatedPayment, wallet);
+      if (messageId) {
+        let existingMeta: Record<string, any> = {};
+        if (payment.metadata) {
+          try {
+            existingMeta = JSON.parse(payment.metadata);
+          } catch {}
+        }
+        existingMeta.telegram_message_id = messageId;
+        await db
+          .update(payments)
+          .set({ metadata: JSON.stringify(existingMeta) })
+          .where(eq(payments.id, payment.id));
+      }
     } catch (err) {
       console.error('[Checkout] Telegram notification dispatch failed:', err);
     }

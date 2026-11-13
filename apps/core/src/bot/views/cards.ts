@@ -17,7 +17,7 @@ export function formatSubmittedCard(payment: Payment, wallet?: MerchantWallet | 
   const lines = [
     `💸 <b>${methodLabel} payment${orderRef}${lateBadge}</b>`,
     `<b>Amount:</b> ৳${payment.amount.toLocaleString('en-BD')}`,
-    `<b>Sent to:</b> <code>${walletDisplay}</code>`,
+    `<b>Wallet:</b> <code>${walletDisplay}</code>`,
     `<b>${trxLabel}:</b> <code>${payment.trxId || 'N/A'}</code>`,
   ];
 
@@ -25,8 +25,9 @@ export function formatSubmittedCard(payment: Payment, wallet?: MerchantWallet | 
     lines.push(`<b>From:</b> <code>${payment.senderNumber}</code>`);
   }
 
+  lines.push(`<b>ID:</b> <code>${payment.id}</code>`);
   lines.push('');
-  lines.push(`<i>Check this ${trxLabel} and amount in your ${methodLabel} app before approving.</i>`);
+  lines.push(`<i>Verify in ${methodLabel}. Reply <b>"ok"</b> (or <b>"y"</b>) to approve, <b>"no"</b> to reject.</i>`);
 
   return lines.join('\n');
 }
@@ -43,8 +44,9 @@ export function formatCodCard(payment: Payment): string {
     `📦 <b>COD order${orderRef}</b>`,
     `<b>Amount:</b> ৳${payment.amount.toLocaleString('en-BD')}`,
     `<b>Customer:</b> ${customerName}${customerPhone}`,
+    `<b>ID:</b> <code>${payment.id}</code>`,
     '',
-    '<i>Confirm or cancel this COD order before fulfilling.</i>',
+    '<i>Reply <b>"ok"</b> to confirm, <b>"no"</b> to cancel.</i>',
   ].join('\n');
 }
 
