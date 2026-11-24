@@ -36,7 +36,7 @@ Because SMPG is **100% self-hosted** (there is no central server or shared bot),
 4. Enter a **username** ending in `bot` (for example: `mystore_payments_bot`).
 5. `@BotFather` will reply with your **HTTP API Token** (looks like `123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ`). Copy and keep it private — you will paste it in Step 2.
 
-*(Optional: If you want to lock the bot to your Telegram account immediately during setup, grab your numeric Telegram User ID from `@userinfobot`. Otherwise, the setup script will generate a secure one-time claim link for you.)*
+*(Optional: If you want to pre-lock the bot to your Telegram account during setup, grab your numeric Telegram User ID from `@userinfobot`. Otherwise, simply tapping **Start** on your bot right after setup permanently locks it to your Telegram account.)*
 
 ---
 
@@ -53,18 +53,18 @@ bun run setup
 
 The setup CLI walks you through everything automatically:
 1. Logs into your Cloudflare account via `wrangler login` (if not already authenticated).
-2. Prompts for your `@BotFather` **HTTP API Token** and validates it against Telegram.
-3. Locks your bot to your Telegram account (via your `OWNER_TELEGRAM_ID` or an auto-generated one-time `/start <SETUP_TOKEN>` claim link).
+2. Prompts for your `@BotFather` **HTTP API Token**.
+3. Optionally locks the bot to your numeric `OWNER_TELEGRAM_ID` (or leaves it ready to lock automatically on your first `/start`).
 4. Creates your D1 database, writes `apps/core/wrangler.toml`, and applies the schema migration remotely.
 5. Deploys `apps/core` to Cloudflare Workers (`https://smpg-core.<your-subdomain>.workers.dev`).
 6. Generates cryptographic `ENCRYPTION_KEY` and `TELEGRAM_WEBHOOK_SECRET` secrets and uploads them to your Worker.
-7. Registers your Telegram webhook automatically and prints your **Worker URL** and **private bot link**.
+7. Registers your Telegram webhook and command menu **from Cloudflare's edge** (avoiding local ISP rate limits) and prints your **Worker URL** and **bot link**.
 
 ---
 
 ### Step 3: Claim Your Bot & Configure Your Store in Telegram
 
-1. Open the **private bot link** printed at the end of `bun run setup` (e.g. `https://t.me/<your_bot>?start=<setup_token>`) and tap **Start** to lock the bot to your Telegram account.
+1. Open your bot in Telegram (e.g. `https://t.me/<your_bot>`) and tap **Start** — this permanently locks the bot to your Telegram account (anyone else who messages it receives `Access denied`).
 2. Create your first store (`/stores` → **Create Store**) — enter your store name to immediately receive your store credentials (shown once):
    - **Live API Key** (`smpg_live_...`)
    - **Test API Key** (`smpg_test_...`)

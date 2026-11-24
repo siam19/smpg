@@ -52,6 +52,86 @@ app.post('/v1/telegram-webhook', async (c) => {
   return webhookCallback(bot, 'hono')(c);
 });
 
+// Failsafe Telegram Webhook Registration (runs from Cloudflare edge, immune to local ISP 429s)
+app.post('/v1/telegram-webhook/register', async (c) => {
+  const secretHeader = c.req.header('X-Telegram-Bot-Api-Secret-Token');
+
+  if (!c.env.TELEGRAM_WEBHOOK_SECRET || secretHeader !== c.env.TELEGRAM_WEBHOOK_SECRET) {
+    return c.json({ ok: false, error: 'Unauthorized: Invalid secret token' }, 401);
+  }
+
+  if (!c.env.TELEGRAM_BOT_TOKEN) {
+    return c.json({ ok: false, error: 'TELEGRAM_BOT_TOKEN is not configured' }, 500);
+  }
+
+  const origin = new URL(c.req.url).origin;
+  const webhookUrl = `${origin}/v1/telegram-webhook`;
+
+  const setWebhookRes = await fetch(
+    `https://api.telegram.org/bot${c.env.TELEGRAM_BOT_TOKEN}/setWebhook`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: webhookUrl,
+        secret_token: c.env.TELEGRAM_WEBHOOK_SECRET,
+        drop_pending_updates: true,
+      }),
+    }
+  );
+  const setWebhookData = (await setWebhookRes.json()) as {
+    ok: boolean;
+    description?: string;
+  };
+
+  if (!setWebhookRes.ok || !setWebhookData.ok) {
+    return c.json(
+      {
+        ok: false,
+        error: setWebhookData.description || `setWebhook failed (HTTP ${setWebhookRes.status})`,
+      },
+      502
+    );
+  }
+
+  // Best-effort: fetch bot info and register slash command menu from Cloudflare edge
+  let botInfo: unknown = null;
+  try {
+    const getMeRes = await fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_BOT_TOKEN}/getMe`);
+    const getMeData = (await getMeRes.json()) as { ok: boolean; result?: unknown };
+    if (getMeRes.ok && getMeData.ok && getMeData.result) {
+      botInfo = getMeData.result;
+    }
+  } catch {
+    // Non-fatal
+  }
+
+  try {
+    await fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_BOT_TOKEN}/setMyCommands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commands: [
+          { command: 'start', description: 'Open main menu or claim bot' },
+          { command: 'stores', description: 'Manage stores, API keys, and webhooks' },
+          { command: 'wallets', description: 'Manage bKash and Nagad receiving wallets' },
+          { command: 'payments', description: 'View recent payments and reopen rejected ones' },
+          { command: 'test', description: 'Simulate a test payment notification' },
+          { command: 'help', description: 'Show command guide' },
+        ],
+      }),
+    });
+  } catch {
+    // Non-fatal
+  }
+
+  return c.json({
+    ok: true,
+    webhook_url: webhookUrl,
+    bot: botInfo,
+  });
+});
+
 export { app };
 
 export default {
