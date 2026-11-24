@@ -1,6 +1,6 @@
 {
   "name": "send-money-payment-gateway",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Official TypeScript/JavaScript client SDK for Send Money Payment Gateway (SMPG)",
   "keywords": [
     "smpg",
@@ -11,13 +11,13 @@
     "cod",
     "bangladesh"
   ],
-  "homepage": "https://github.com/your-org/smpg#readme",
+  "homepage": "https://github.com/siam19/smpg#readme",
   "bugs": {
-    "url": "https://github.com/your-org/smpg/issues"
+    "url": "https://github.com/siam19/smpg/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/your-org/smpg.git",
+    "url": "git+https://github.com/siam19/smpg.git",
     "directory": "packages/sdk"
   },
   "license": "MIT",
