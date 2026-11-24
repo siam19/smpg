@@ -65,9 +65,32 @@ interface TelegramBotInfo {
   supports_inline_queries?: boolean;
 }
 
+class TelegramRateLimitError extends Error {
+  readonly retryAfter: number;
+  constructor(message: string, retryAfter: number) {
+    super(message);
+    this.name = 'TelegramRateLimitError';
+    this.retryAfter = retryAfter;
+  }
+}
+
+const BOT_TOKEN_REGEX = /^\d+:[A-Za-z0-9_-]{20,}$/;
+
 async function validateTelegramToken(token: string): Promise<TelegramBotInfo> {
   const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-  const data = (await res.json()) as { ok: boolean; result?: TelegramBotInfo; description?: string };
+  const data = (await res.json()) as {
+    ok: boolean;
+    result?: TelegramBotInfo;
+    description?: string;
+    parameters?: { retry_after?: number };
+  };
+  if (res.status === 429) {
+    const retryAfter = data.parameters?.retry_after ?? 15;
+    throw new TelegramRateLimitError(
+      data.description || `Too Many Requests: retry after ${retryAfter}s`,
+      retryAfter
+    );
+  }
   if (!res.ok || !data.ok || !data.result) {
     throw new Error(data.description || `Telegram API returned HTTP ${res.status}`);
   }
@@ -78,21 +101,51 @@ async function registerTelegramWebhook(
   token: string,
   workerUrl: string,
   webhookSecret: string
-): Promise<void> {
+): Promise<boolean> {
   const webhookUrl = `${workerUrl.replace(/\/+$/, '')}/v1/telegram-webhook`;
-  const res = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      url: webhookUrl,
-      secret_token: webhookSecret,
-      drop_pending_updates: true,
-    }),
-  });
-  const data = (await res.json()) as { ok: boolean; description?: string };
-  if (!res.ok || !data.ok) {
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const res = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: webhookUrl,
+        secret_token: webhookSecret,
+        drop_pending_updates: true,
+      }),
+    });
+    const data = (await res.json()) as {
+      ok: boolean;
+      description?: string;
+      parameters?: { retry_after?: number };
+    };
+
+    if (res.ok && data.ok) {
+      return true;
+    }
+
+    if (res.status === 429 && attempt === 1) {
+      const waitSec = Math.min((data.parameters?.retry_after ?? 10) + 1, 35);
+      console.log(`Telegram rate-limited setWebhook. Waiting ${waitSec}s before retrying...`);
+      await new Promise((r) => setTimeout(r, waitSec * 1000));
+      continue;
+    }
+
+    if (res.status === 429) {
+      console.log(
+        `Warning: Telegram rate-limited setWebhook from this IP (${data.description || 'HTTP 429'}).`
+      );
+      console.log('Your Worker is already deployed! Run this command in a minute to finish webhook registration:');
+      console.log(
+        `  curl -X POST "https://api.telegram.org/bot${token}/setWebhook" -H "Content-Type: application/json" -d '{"url":"${webhookUrl}","secret_token":"${webhookSecret}","drop_pending_updates":true}'`
+      );
+      return false;
+    }
+
     throw new Error(data.description || `setWebhook failed with HTTP ${res.status}`);
   }
+
+  return false;
 }
 
 async function findExistingD1DatabaseId(dbName: string): Promise<string | null> {
@@ -211,17 +264,56 @@ async function main(): Promise<void> {
 
     let botToken = '';
     let botInfo: TelegramBotInfo | null = null;
-    while (!botInfo) {
+    let botUsername = '';
+    while (true) {
       botToken = (await rl.question('TELEGRAM_BOT_TOKEN: ')).trim();
       if (!botToken) {
         console.log('Bot token is required.');
         continue;
       }
+      if (!BOT_TOKEN_REGEX.test(botToken)) {
+        console.log('Invalid token format. Expected something like 123456789:ABCdef... from @BotFather.');
+        continue;
+      }
       try {
         process.stdout.write('Validating bot token via Telegram getMe... ');
         botInfo = await validateTelegramToken(botToken);
+        botUsername = botInfo.username;
         console.log(`OK (@${botInfo.username})`);
+        break;
       } catch (err) {
+        if (err instanceof TelegramRateLimitError) {
+          console.log(`RATE LIMITED (${err.message})`);
+          console.log(
+            '  Telegram is temporarily rate-limiting requests from your IP (common on shared/CGNAT networks).'
+          );
+          const choice = (
+            await rl.question(
+              `  Press Enter to skip local validation and continue (recommended), or type "r" to wait ${err.retryAfter + 1}s & retry: `
+            )
+          )
+            .trim()
+            .toLowerCase();
+          if (choice === 'r') {
+            console.log(`  Waiting ${err.retryAfter + 1}s...`);
+            await new Promise((r) => setTimeout(r, (err.retryAfter + 1) * 1000));
+            try {
+              process.stdout.write('Retrying Telegram getMe... ');
+              botInfo = await validateTelegramToken(botToken);
+              botUsername = botInfo.username;
+              console.log(`OK (@${botInfo.username})`);
+              break;
+            } catch (retryErr) {
+              console.log(`FAILED (${retryErr instanceof Error ? retryErr.message : String(retryErr)})`);
+              console.log('  Continuing without local getMe validation (Worker will fetch bot info automatically).');
+            }
+          }
+          const rawUser = (await rl.question('Bot username without @ (optional, for summary link): '))
+            .trim()
+            .replace(/^@/, '');
+          botUsername = rawUser;
+          break;
+        }
         console.log(`FAILED (${err instanceof Error ? err.message : String(err)})`);
       }
     }
@@ -321,14 +413,15 @@ async function main(): Promise<void> {
     console.log('[6/8] Generating cryptographic secrets & uploading via Wrangler...');
     const encryptionKey = randomBytes(32).toString('hex');
     const webhookSecret = randomBytes(32).toString('hex');
-    const botInfoJson = JSON.stringify(botInfo);
 
     const secrets: Array<[string, string]> = [
       ['TELEGRAM_BOT_TOKEN', botToken],
       ['TELEGRAM_WEBHOOK_SECRET', webhookSecret],
       ['ENCRYPTION_KEY', encryptionKey],
-      ['BOT_INFO', botInfoJson],
     ];
+    if (botInfo) {
+      secrets.push(['BOT_INFO', JSON.stringify(botInfo)]);
+    }
     if (ownerTelegramId) {
       secrets.push(['OWNER_TELEGRAM_ID', ownerTelegramId]);
     } else {
@@ -344,8 +437,10 @@ async function main(): Promise<void> {
 
     // Step 7: Register Telegram webhook
     console.log('[7/8] Registering Telegram webhook...');
-    await registerTelegramWebhook(botToken, workerUrl, webhookSecret);
-    console.log(`Webhook set to: ${workerUrl}/v1/telegram-webhook`);
+    const webhookRegistered = await registerTelegramWebhook(botToken, workerUrl, webhookSecret);
+    if (webhookRegistered) {
+      console.log(`Webhook set to: ${workerUrl}/v1/telegram-webhook`);
+    }
     console.log('');
 
     // Step 8: Summary
@@ -354,11 +449,17 @@ async function main(): Promise<void> {
     console.log('------------------------------------------------------------');
     console.log(`Worker URL (SMPG_CORE_URL): ${workerUrl}`);
     if (setupToken) {
-      console.log(`Claim & Start Bot:          https://t.me/${botInfo.username}?start=${setupToken}`);
+      if (botUsername) {
+        console.log(`Claim & Start Bot:          https://t.me/${botUsername}?start=${setupToken}`);
+      } else {
+        console.log(`Claim Command (send to bot): /start ${setupToken}`);
+      }
       console.log('');
-      console.log('Note: Open the claim link above once to lock the bot to your Telegram account.');
+      console.log('Note: Open the claim link (or send the /start command) once to lock the bot to your Telegram account.');
+    } else if (botUsername) {
+      console.log(`Open Your Bot:              https://t.me/${botUsername}`);
     } else {
-      console.log(`Open Your Bot:              https://t.me/${botInfo.username}`);
+      console.log('Open your bot in Telegram and send /start.');
     }
     console.log('------------------------------------------------------------');
     console.log('');
