@@ -132,9 +132,11 @@ async function registerWebhookViaWorker(
 ): Promise<{ webhookUrl: string; bot: TelegramBotInfo | null }> {
   const registerUrl = `${workerUrl.replace(/\/+$/, '')}/v1/telegram-webhook/register`;
 
-  // Retry up to 6 times (15s total) to allow newly uploaded Cloudflare Worker secrets to propagate
+  let authRetries = 0;
+  let rateLimitRetries = 0;
   let lastError = 'Unknown error';
-  for (let attempt = 1; attempt <= 6; attempt++) {
+
+  while (true) {
     try {
       const res = await fetch(registerUrl, {
         method: 'POST',
@@ -147,6 +149,7 @@ async function registerWebhookViaWorker(
         webhook_url?: string;
         bot?: TelegramBotInfo | null;
         error?: string;
+        retry_after?: number;
       };
 
       if (res.ok && data.ok) {
@@ -157,16 +160,51 @@ async function registerWebhookViaWorker(
       }
 
       lastError = data.error || `HTTP ${res.status}`;
+
+      // 1. Secret propagation delay right after `wrangler secret put`
+      if (res.status === 401 && authRetries < 6) {
+        authRetries++;
+        console.log(`  Waiting for Cloudflare Worker secret propagation (attempt ${authRetries}/6)...`);
+        await new Promise((r) => setTimeout(r, 2500));
+        continue;
+      }
+
+      // 2. Telegram per-bot 429 rate limit: ALWAYS wait the full retry_after + 2s (never hammer!)
+      const retryAfterMatch = lastError.match(/retry after\s+(\d+)/i);
+      const retryAfterSec =
+        typeof data.retry_after === 'number'
+          ? data.retry_after
+          : retryAfterMatch
+            ? parseInt(retryAfterMatch[1], 10)
+            : null;
+
+      if ((res.status === 429 || retryAfterSec !== null) && rateLimitRetries < 3) {
+        rateLimitRetries++;
+        const waitSec = Math.min((retryAfterSec ?? 20) + 2, 65);
+        console.log(
+          `  Telegram rate-limited this bot (${lastError}). Waiting ${waitSec}s before retrying (${rateLimitRetries}/3)...`
+        );
+        await new Promise((r) => setTimeout(r, waitSec * 1000));
+        continue;
+      }
+
+      break;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
-    }
-
-    if (attempt < 6) {
-      await new Promise((r) => setTimeout(r, 2500));
+      if (authRetries < 3) {
+        authRetries++;
+        await new Promise((r) => setTimeout(r, 2500));
+        continue;
+      }
+      break;
     }
   }
 
-  throw new Error(`Worker webhook registration failed: ${lastError}`);
+  throw new Error(
+    `Worker webhook registration failed: ${lastError}\n` +
+      `  Tip: If Telegram keeps returning 429 for this bot token, make sure no other app is polling it,\n` +
+      `  or rotate/create a fresh bot token via @BotFather (/revoke or /newbot) and run \`bun run setup -- --reset\`.`
+  );
 }
 
 async function findExistingD1DatabaseId(dbName: string): Promise<string | null> {

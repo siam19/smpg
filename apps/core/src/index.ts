@@ -85,15 +85,18 @@ app.post('/v1/telegram-webhook/register', async (c) => {
   const setWebhookData = (await setWebhookRes.json()) as {
     ok: boolean;
     description?: string;
+    parameters?: { retry_after?: number };
   };
 
   if (!setWebhookRes.ok || !setWebhookData.ok) {
+    const retryAfter = setWebhookData.parameters?.retry_after;
     return c.json(
       {
         ok: false,
         error: setWebhookData.description || `setWebhook failed (HTTP ${setWebhookRes.status})`,
+        ...(typeof retryAfter === 'number' ? { retry_after: retryAfter } : {}),
       },
-      502
+      setWebhookRes.status === 429 ? 429 : 502
     );
   }
 
