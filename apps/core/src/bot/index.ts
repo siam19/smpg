@@ -28,7 +28,7 @@ export function createBot(env: Env, db: Database): Bot<BotContext> {
     }
   }
 
-  const bot = new Bot<BotContext>(env.TELEGRAM_BOT_TOKEN, botOptions);
+  const bot = new Bot<BotContext>(env.TELEGRAM_BOT_TOKEN.trim(), botOptions);
 
   // Inbound error boundary
   bot.catch(handleBotError);

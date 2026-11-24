@@ -39,9 +39,10 @@ app.route('/c', checkoutRouter);
 
 // Telegram Bot Webhook endpoint
 app.post('/v1/telegram-webhook', async (c) => {
-  const secretHeader = c.req.header('X-Telegram-Bot-Api-Secret-Token');
+  const secretHeader = c.req.header('X-Telegram-Bot-Api-Secret-Token')?.trim();
+  const expectedSecret = c.env.TELEGRAM_WEBHOOK_SECRET?.trim();
 
-  if (!c.env.TELEGRAM_WEBHOOK_SECRET || secretHeader !== c.env.TELEGRAM_WEBHOOK_SECRET) {
+  if (!expectedSecret || secretHeader !== expectedSecret) {
     return c.text('Unauthorized: Invalid secret token', 401);
   }
 
@@ -54,13 +55,15 @@ app.post('/v1/telegram-webhook', async (c) => {
 
 // Failsafe Telegram Webhook Registration (runs from Cloudflare edge, immune to local ISP 429s)
 app.post('/v1/telegram-webhook/register', async (c) => {
-  const secretHeader = c.req.header('X-Telegram-Bot-Api-Secret-Token');
+  const secretHeader = c.req.header('X-Telegram-Bot-Api-Secret-Token')?.trim();
+  const expectedSecret = c.env.TELEGRAM_WEBHOOK_SECRET?.trim();
 
-  if (!c.env.TELEGRAM_WEBHOOK_SECRET || secretHeader !== c.env.TELEGRAM_WEBHOOK_SECRET) {
+  if (!expectedSecret || secretHeader !== expectedSecret) {
     return c.json({ ok: false, error: 'Unauthorized: Invalid secret token' }, 401);
   }
 
-  if (!c.env.TELEGRAM_BOT_TOKEN) {
+  const botToken = c.env.TELEGRAM_BOT_TOKEN?.trim();
+  if (!botToken) {
     return c.json({ ok: false, error: 'TELEGRAM_BOT_TOKEN is not configured' }, 500);
   }
 
@@ -68,13 +71,13 @@ app.post('/v1/telegram-webhook/register', async (c) => {
   const webhookUrl = `${origin}/v1/telegram-webhook`;
 
   const setWebhookRes = await fetch(
-    `https://api.telegram.org/bot${c.env.TELEGRAM_BOT_TOKEN}/setWebhook`,
+    `https://api.telegram.org/bot${botToken}/setWebhook`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         url: webhookUrl,
-        secret_token: c.env.TELEGRAM_WEBHOOK_SECRET,
+        secret_token: expectedSecret,
         drop_pending_updates: true,
       }),
     }
@@ -97,7 +100,7 @@ app.post('/v1/telegram-webhook/register', async (c) => {
   // Best-effort: fetch bot info and register slash command menu from Cloudflare edge
   let botInfo: unknown = null;
   try {
-    const getMeRes = await fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_BOT_TOKEN}/getMe`);
+    const getMeRes = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
     const getMeData = (await getMeRes.json()) as { ok: boolean; result?: unknown };
     if (getMeRes.ok && getMeData.ok && getMeData.result) {
       botInfo = getMeData.result;
@@ -107,7 +110,7 @@ app.post('/v1/telegram-webhook/register', async (c) => {
   }
 
   try {
-    await fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_BOT_TOKEN}/setMyCommands`, {
+    await fetch(`https://api.telegram.org/bot${botToken}/setMyCommands`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
