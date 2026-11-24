@@ -12,4 +12,3 @@ build/
 .DS_Store
 coverage/
 .agents/
-docs/

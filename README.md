@@ -1,19 +1,48 @@
-# SMPG (Send Money Payment Gateway)
+<p align="center">
+  <img src="docs/smpg-logo.png" alt="SMPG — Send Money Payment Gateway" width="380" />
+</p>
 
-Self-hosted, single-owner, multi-store payment gateway for **bKash Personal Send Money**, **Nagad Personal Send Money**, and **Cash on Delivery (COD)** on any e-commerce storefront — with **0% transaction fees**, **no corporate trade license required**, and **free Cloudflare Workers + D1 hosting (no credit card required)**.
+<p align="center">
+  <strong>Self-hosted, single-owner, multi-store payment gateway for bKash Personal Send Money, Nagad Personal Send Money, and Cash on Delivery (COD)</strong><br />
+  0% transaction fees · No corporate trade license required · Free Cloudflare Workers + D1 hosting (no credit card required)
+</p>
 
-[![NPM Version](https://img.shields.io/npm/v/send-money-payment-gateway?color=blue)](https://www.npmjs.com/package/send-money-payment-gateway)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Zero Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](packages/sdk)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue)](https://www.typescriptlang.org)
+<p align="center">
+  <a href="https://www.npmjs.com/package/send-money-payment-gateway"><img src="https://img.shields.io/npm/v/send-money-payment-gateway?color=blue" alt="NPM Version" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT" /></a>
+  <a href="packages/sdk"><img src="https://img.shields.io/badge/dependencies-0-brightgreen" alt="Zero Dependencies" /></a>
+  <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/TypeScript-5.0+-blue" alt="TypeScript" /></a>
+</p>
+
+---
+
+## Prerequisites
+
+Because SMPG is **100% self-hosted** (there is no central server or shared bot), you will need:
+
+1. **A Telegram account** — used to create your own private payments bot via `@BotFather` and approve/reject customer transactions.
+2. **A Cloudflare account** — free tier is plenty (Cloudflare Workers + D1 SQLite require **no credit card**). Sign up at [dash.cloudflare.com](https://dash.cloudflare.com/sign-up).
+3. **Bun (v1.2+)** installed locally — install from [bun.sh](https://bun.sh).
 
 ---
 
 ## Quick Start
 
-### 1. Self-Host SMPG Core (1 Command)
+### Step 1: Create Your Telegram Bot with `@BotFather`
 
-Deploy your own private SMPG Worker + D1 database and connect your own Telegram bot:
+1. Open Telegram and search for **`@BotFather`** (look for the blue verified checkmark).
+2. Send `/newbot`.
+3. Enter a **display name** for your bot (for example: `My Store Payments`).
+4. Enter a **username** ending in `bot` (for example: `mystore_payments_bot`).
+5. `@BotFather` will reply with your **HTTP API Token** (looks like `123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ`). Copy and keep it private — you will paste it in Step 2.
+
+*(Optional: If you want to lock the bot to your Telegram account immediately during setup, grab your numeric Telegram User ID from `@userinfobot`. Otherwise, the setup script will generate a secure one-time claim link for you.)*
+
+---
+
+### Step 2: Deploy SMPG Core to Your Cloudflare Account
+
+Clone this repository and run the 1-command interactive setup CLI:
 
 ```bash
 git clone https://github.com/siam19/smpg.git
@@ -22,20 +51,32 @@ bun install
 bun run setup
 ```
 
-The interactive setup CLI walks you through:
-1. Checking Cloudflare Wrangler login (`bunx wrangler login`).
-2. Creating a private Telegram bot via `@BotFather` and validating the token.
-3. Locking the bot to your Telegram account (`OWNER_TELEGRAM_ID` or a one-time `/start <SETUP_TOKEN>` claim link).
-4. Provisioning a D1 database, writing `apps/core/wrangler.toml`, and applying migrations.
-5. Generating `ENCRYPTION_KEY` and `TELEGRAM_WEBHOOK_SECRET` and uploading all Worker secrets.
-6. Deploying `apps/core` and registering your Telegram webhook automatically.
+The setup CLI walks you through everything automatically:
+1. Logs into your Cloudflare account via `wrangler login` (if not already authenticated).
+2. Prompts for your `@BotFather` **HTTP API Token** and validates it against Telegram.
+3. Locks your bot to your Telegram account (via your `OWNER_TELEGRAM_ID` or an auto-generated one-time `/start <SETUP_TOKEN>` claim link).
+4. Creates your D1 database, writes `apps/core/wrangler.toml`, and applies the schema migration remotely.
+5. Deploys `apps/core` to Cloudflare Workers (`https://smpg-core.<your-subdomain>.workers.dev`).
+6. Generates cryptographic `ENCRYPTION_KEY` and `TELEGRAM_WEBHOOK_SECRET` secrets and uploads them to your Worker.
+7. Registers your Telegram webhook automatically and prints your **Worker URL** and **private bot link**.
 
-Once deployed, open your private Telegram bot link:
-- Create one or more stores (`/stores`) — each store gets its own `smpg_live_...` / `smpg_test_...` API keys and webhook secret.
-- Add your personal bKash and Nagad numbers (`/wallets`) — shared across all stores by default (or scoped to a single store) with automatic daily ৳25,000 SIM cap rotation.
-- Configure each store's webhook URL (e.g. `https://mystore.com/api/webhooks/smpg`).
+---
 
-### 2. Install the SDK in Your Storefront
+### Step 3: Claim Your Bot & Configure Your Store in Telegram
+
+1. Open the **private bot link** printed at the end of `bun run setup` (e.g. `https://t.me/<your_bot>?start=<setup_token>`) and tap **Start** to lock the bot to your Telegram account.
+2. Create your first store (`/stores` → **Create Store**) — enter your store name to immediately receive your store credentials (shown once):
+   - **Live API Key** (`smpg_live_...`)
+   - **Test API Key** (`smpg_test_...`)
+   - **Webhook Secret** (`whsec_...`)
+3. Add your personal bKash and/or Nagad SIM numbers (`/wallets` → **Add bKash** / **Add Nagad**). Wallets are shared across all your stores by default (or can be scoped to a single store) with automatic ৳25,000/day SIM cap rotation.
+4. Set your storefront's webhook URL under `/stores` → select your store → **Set Webhook** (e.g. `https://yourstore.com/api/webhooks/smpg`).
+
+---
+
+### Step 4: Connect SMPG to Your Website
+
+#### 1. Install the SDK in your storefront project
 
 ```bash
 # npm
@@ -48,9 +89,23 @@ bun add send-money-payment-gateway
 pnpm add send-money-payment-gateway
 ```
 
-### 3. Install the AI Coding Agent Skill
+#### 2. Add your environment variables
 
-When building with AI coding assistants (Cursor, Claude Code, Antigravity, Codex), install the integration skill for full guidelines, validation rules, and multi-framework templates:
+Add these to your storefront's `.env` file using the Worker URL from Step 2 and the store credentials from Step 3:
+
+```env
+# Server-side only (NEVER expose to the browser)
+SMPG_CORE_URL="https://smpg-core.<your-subdomain>.workers.dev"
+SMPG_SECRET_KEY="smpg_live_..."        # Use smpg_test_... while testing
+SMPG_WEBHOOK_SECRET="whsec_..."
+
+# Public (safe for browser-side SMPGCheckout)
+NEXT_PUBLIC_SMPG_CORE_URL="https://smpg-core.<your-subdomain>.workers.dev"
+```
+
+#### 3. (Optional) Install the AI Coding Agent Skill
+
+Building your storefront with an AI coding assistant (Cursor, Claude Code, Antigravity, Codex)? Install the integration skill so your agent gets the full API rules, raw-body webhook verification guidelines, and framework templates:
 
 ```bash
 npx skills add siam19/smpg --skill smpg-integration
@@ -90,7 +145,7 @@ SMPG is designed for **embedded custom checkout UIs** inside your own storefront
 
 ### Key Principles
 - **Self-Hosted & Private**: You own the Worker, D1 database, and Telegram bot. Zero central servers, zero shared merchant data, zero R2 bucket requirement.
-- **Single-Owner, Multi-Store**: Manage multiple storefronts from one personal Telegram bot, with shared or store-scoped personal SIM wallets and clean plain-text notifications (no emojis).
+- **Single-Owner, Multi-Store**: Manage multiple storefronts from one personal Telegram bot, with shared or store-scoped personal SIM wallets and clean plain-text notifications.
 - **Dynamic SIM Rotation**: Outgoing payments are balanced across your personal bKash/Nagad numbers so each SIM stays below its daily ৳25,000 cap across all stores.
 - **90-Second Undo Window**: Any accidental Approve/Reject tap in Telegram can be undone within 90 seconds before the state finalizes and webhooks fire.
 - **Signed Webhook Fulfillment**: Your storefront only fulfills orders when a verified HMAC-SHA256 webhook (`x-smpg-signature`) arrives.
@@ -209,10 +264,6 @@ smpg/
 ---
 
 ## Local Development
-
-### Prerequisites
-- [Bun](https://bun.sh) (v1.2+)
-- [Cloudflare Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/)
 
 ```bash
 # 1. Install dependencies
