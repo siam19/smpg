@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { drizzle } from 'drizzle-orm/d1';
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import * as schema from '../../src/db/schema';
 
@@ -67,9 +67,14 @@ export function createTestD1(): { d1: D1Database; db: ReturnType<typeof drizzle<
   sqlite.exec('PRAGMA foreign_keys = ON;');
 
   const migrationsDir = join(__dirname, '../../migrations');
-  const m1 = readFileSync(join(migrationsDir, '0001_initial_schema.sql'), 'utf-8');
+  const migrationFiles = readdirSync(migrationsDir)
+    .filter((f) => f.endsWith('.sql'))
+    .sort();
 
-  sqlite.exec(m1);
+  for (const file of migrationFiles) {
+    const sql = readFileSync(join(migrationsDir, file), 'utf-8');
+    sqlite.exec(sql);
+  }
 
   const mockD1 = new MockD1Database(sqlite);
   const db = drizzle(mockD1 as unknown as D1Database, { schema });

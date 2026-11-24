@@ -65,6 +65,8 @@ export function createStoreDetailKeyboard(store: Store): InlineKeyboard {
   const pauseText = store.paused === 1 ? 'Resume Store' : 'Pause Store';
 
   return new InlineKeyboard()
+    .text('View Server Credentials', `store:creds:${store.id}`)
+    .row()
     .text('Rename', `store:rename:${store.id}`)
     .text('API Keys', `store:keys:${store.id}`)
     .row()
@@ -93,6 +95,8 @@ export function createStoreDeleteConfirmKeyboard(storeId: string): InlineKeyboar
  */
 export function createStoreKeysKeyboard(storeId: string): InlineKeyboard {
   return new InlineKeyboard()
+    .text('View Server Credentials', `store:creds:${storeId}`)
+    .row()
     .text('Rotate Live Key', `keys:rotate:live:${storeId}`)
     .text('Rotate Test Key', `keys:rotate:test:${storeId}`)
     .row()

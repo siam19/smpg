@@ -22,7 +22,13 @@ import {
   createWalletsDashboardKeyboard,
 } from '../views/keyboards';
 import { getRotationStrategy, getWalletsWithUsage } from '../../services/wallet';
-import { decryptAesGcm, generateApiKey, generatePrefixedId, sha256 } from '../../services/crypto';
+import {
+  decryptAesGcm,
+  encryptAesGcm,
+  generateApiKey,
+  generatePrefixedId,
+  sha256,
+} from '../../services/crypto';
 import { deliverWebhookPayload } from '../../services/webhook';
 import { reopenRejectedPayment } from '../../services/decision';
 import { ACCESS_DENIED_MESSAGE } from '../middleware/auth';
@@ -180,7 +186,7 @@ export async function renderStoreKeys(ctx: BotContext, storeId: string, editMess
 
   lines.push(
     '',
-    '<i>Note: Full secret keys are only displayed once upon creation or rotation.</i>'
+    '<i>Tip: Use "View Server Credentials" to copy SMPG_CORE_URL, SMPG_SECRET_KEY, and SMPG_WEBHOOK_SECRET anytime.</i>'
   );
 
   const keyboard = createStoreKeysKeyboard(store.id);
@@ -190,6 +196,90 @@ export async function renderStoreKeys(ctx: BotContext, storeId: string, editMess
   } else {
     await ctx.reply(lines.join('\n'), { parse_mode: 'HTML', reply_markup: keyboard });
   }
+}
+
+/**
+ * Renders copyable server credentials (SMPG_CORE_URL, SMPG_SECRET_KEY, SMPG_WEBHOOK_SECRET)
+ * for a store. Every value is wrapped in <code> tags so tapping/clicking copies it in Telegram.
+ */
+export async function renderStoreServerCredentials(ctx: BotContext, storeId: string) {
+  if (!ctx.isOwner) return;
+
+  const store = await ctx.db.select().from(stores).where(eq(stores.id, storeId)).get();
+  if (!store) {
+    await ctx.reply(`Store <code>${storeId}</code> not found.`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  const activeKeys = await ctx.db
+    .select()
+    .from(apiKeys)
+    .where(and(eq(apiKeys.storeId, store.id), isNull(apiKeys.revokedAt)))
+    .all();
+
+  const liveKeyRow = activeKeys.find((k) => k.mode === 'live') ?? null;
+  const testKeyRow = activeKeys.find((k) => k.mode === 'test') ?? null;
+
+  let liveKey: string | null = null;
+  let testKey: string | null = null;
+  let webhookSecret: string | null = null;
+
+  try {
+    webhookSecret = await decryptAesGcm(store.webhookSecret, ctx.env.ENCRYPTION_KEY);
+  } catch {
+    webhookSecret = null;
+  }
+
+  if (liveKeyRow?.encryptedKey) {
+    try {
+      liveKey = await decryptAesGcm(liveKeyRow.encryptedKey, ctx.env.ENCRYPTION_KEY);
+    } catch {
+      liveKey = null;
+    }
+  }
+
+  if (testKeyRow?.encryptedKey) {
+    try {
+      testKey = await decryptAesGcm(testKeyRow.encryptedKey, ctx.env.ENCRYPTION_KEY);
+    } catch {
+      testKey = null;
+    }
+  }
+
+  const coreUrl = ctx.coreUrl || 'Not detected (send a message via your Worker webhook)';
+
+  const lines: string[] = [
+    `<b>Server Credentials: ${store.name}</b>`,
+    '<i>Tap any value below to copy:</i>',
+    '',
+    '<b>SMPG_CORE_URL</b>',
+    `<code>${coreUrl}</code>`,
+    '',
+    '<b>SMPG_SECRET_KEY (Live)</b>',
+    liveKey
+      ? `<code>${liveKey}</code>`
+      : '<i>Not stored on this legacy key. Tap "API Keys" -> "Rotate Live Key" to generate a viewable key.</i>',
+    '',
+    '<b>SMPG_SECRET_KEY (Test)</b>',
+    testKey
+      ? `<code>${testKey}</code>`
+      : '<i>Not stored on this legacy key. Tap "API Keys" -> "Rotate Test Key" to generate a viewable key.</i>',
+    '',
+    '<b>SMPG_WEBHOOK_SECRET</b>',
+    webhookSecret
+      ? `<code>${webhookSecret}</code>`
+      : '<i>Failed to decrypt webhook secret. Check ENCRYPTION_KEY.</i>',
+  ];
+
+  if (ctx.coreUrl && liveKey && webhookSecret) {
+    lines.push(
+      '',
+      '<b>Copy-paste .env (Live):</b>',
+      `<pre>SMPG_CORE_URL=${ctx.coreUrl}\nSMPG_SECRET_KEY=${liveKey}\nSMPG_WEBHOOK_SECRET=${webhookSecret}</pre>`
+    );
+  }
+
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
 }
 
 /**
@@ -488,6 +578,11 @@ export async function handleMenuCallback(ctx: BotContext, data: string) {
     return renderStoreDetail(ctx, storeId, true);
   }
 
+  if (data.startsWith('store:creds:')) {
+    const storeId = data.slice('store:creds:'.length);
+    return renderStoreServerCredentials(ctx, storeId);
+  }
+
   if (data.startsWith('store:keys:')) {
     const storeId = data.slice('store:keys:'.length);
     return renderStoreKeys(ctx, storeId, true);
@@ -551,12 +646,16 @@ export async function handleMenuCallback(ctx: BotContext, data: string) {
       .where(and(eq(apiKeys.storeId, storeId), eq(apiKeys.mode, targetMode)));
 
     const newKeyData = generateApiKey(targetMode);
-    const keyHash = await sha256(newKeyData.key);
+    const [keyHash, encryptedKey] = await Promise.all([
+      sha256(newKeyData.key),
+      encryptAesGcm(newKeyData.key, ctx.env.ENCRYPTION_KEY),
+    ]);
 
     await ctx.db.insert(apiKeys).values({
       id: generatePrefixedId('key'),
       storeId,
       keyHash,
+      encryptedKey,
       prefix: newKeyData.prefix,
       mode: targetMode,
       revokedAt: null,
@@ -568,7 +667,7 @@ export async function handleMenuCallback(ctx: BotContext, data: string) {
         `<b>${targetMode.toUpperCase()} API Key Rotated</b>`,
         `Store: ${store.name} (<code>${store.id}</code>)`,
         '',
-        'New API Key (save this now, shown only once):',
+        '<b>New SMPG_SECRET_KEY (tap to copy):</b>',
         `<code>${newKeyData.key}</code>`,
       ].join('\n'),
       { parse_mode: 'HTML' }

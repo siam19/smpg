@@ -27,13 +27,19 @@ export class SMPGCheckout {
       );
     }
 
-    this.defaultBaseUrl = rawBaseUrl.trim().replace(/\/+$/, '');
+    this.defaultBaseUrl = rawBaseUrl
+      .trim()
+      .replace(/\/+$/, '')
+      .replace(/\/v1(?:\/payments)?$/i, '');
     this.defaultFetchFn =
       typeof baseUrlOrOptions === 'object' ? baseUrlOrOptions.fetchFn : undefined;
   }
 
   private getUrl(path: string, options?: ClientCheckoutOptions): string {
-    const base = (options?.baseUrl || this.defaultBaseUrl).trim().replace(/\/+$/, '');
+    const base = (options?.baseUrl || this.defaultBaseUrl)
+      .trim()
+      .replace(/\/+$/, '')
+      .replace(/\/v1(?:\/payments)?$/i, '');
     return `${base}${path.startsWith('/') ? path : `/${path}`}`;
   }
 

@@ -10,7 +10,7 @@ import { paymentsRouter } from './api/payments';
 import { checkoutRouter } from './api/checkout';
 import type { Env } from './types';
 
-const app = new Hono<{ Bindings: Env; Variables: ApiVariables }>();
+const app = new Hono<{ Bindings: Env; Variables: ApiVariables }>({ strict: false });
 
 app.use('*', cors());
 
@@ -48,7 +48,8 @@ app.post('/v1/telegram-webhook', async (c) => {
 
   const db = createDb(c.env.DB);
   const { createBot } = await import('./bot');
-  const bot = createBot(c.env, db);
+  const coreUrl = new URL(c.req.url).origin;
+  const bot = createBot(c.env, db, coreUrl);
 
   return webhookCallback(bot, 'hono')(c);
 });

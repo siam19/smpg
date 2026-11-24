@@ -45,9 +45,11 @@ export async function createStoreWithCredentials(
 
   const liveKeyData = generateApiKey('live');
   const testKeyData = generateApiKey('test');
-  const [liveHash, testHash] = await Promise.all([
+  const [liveHash, testHash, liveEncrypted, testEncrypted] = await Promise.all([
     sha256(liveKeyData.key),
     sha256(testKeyData.key),
+    encryptAesGcm(liveKeyData.key, env.ENCRYPTION_KEY),
+    encryptAesGcm(testKeyData.key, env.ENCRYPTION_KEY),
   ]);
 
   await db.insert(apiKeys).values([
@@ -55,6 +57,7 @@ export async function createStoreWithCredentials(
       id: generatePrefixedId('key'),
       storeId,
       keyHash: liveHash,
+      encryptedKey: liveEncrypted,
       prefix: liveKeyData.prefix,
       mode: 'live',
       revokedAt: null,
@@ -64,6 +67,7 @@ export async function createStoreWithCredentials(
       id: generatePrefixedId('key'),
       storeId,
       keyHash: testHash,
+      encryptedKey: testEncrypted,
       prefix: testKeyData.prefix,
       mode: 'test',
       revokedAt: null,

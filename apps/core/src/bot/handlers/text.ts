@@ -81,18 +81,23 @@ export async function handleTextReply(ctx: BotContext) {
       }
 
       const bundle = await createStoreWithCredentials(ctx.db, ctx.env, input);
-      await ctx.reply(
-        [
-          `<b>Store Created: ${bundle.store.name}</b>`,
-          `<b>Store ID:</b> <code>${bundle.store.id}</code>`,
-          '',
-          '<b>Save these credentials now (API keys are shown only once):</b>',
-          `<b>Live API Key:</b> <code>${bundle.liveKey}</code>`,
-          `<b>Test API Key:</b> <code>${bundle.testKey}</code>`,
-          `<b>Webhook Secret:</b> <code>${bundle.webhookSecret}</code>`,
-        ].join('\n'),
-        { parse_mode: 'HTML' }
-      );
+      const credLines = [
+        `<b>Store Created: ${bundle.store.name}</b>`,
+        `<b>Store ID:</b> <code>${bundle.store.id}</code>`,
+        '',
+        '<i>Tap any credential below to copy (you can view these anytime under "View Server Credentials"):</i>',
+        ...(ctx.coreUrl ? ['', '<b>SMPG_CORE_URL</b>', `<code>${ctx.coreUrl}</code>`] : []),
+        '',
+        '<b>SMPG_SECRET_KEY (Live)</b>',
+        `<code>${bundle.liveKey}</code>`,
+        '',
+        '<b>SMPG_SECRET_KEY (Test)</b>',
+        `<code>${bundle.testKey}</code>`,
+        '',
+        '<b>SMPG_WEBHOOK_SECRET</b>',
+        `<code>${bundle.webhookSecret}</code>`,
+      ];
+      await ctx.reply(credLines.join('\n'), { parse_mode: 'HTML' });
       return renderStoreDetail(ctx, bundle.store.id);
     }
 

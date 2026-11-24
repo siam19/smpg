@@ -17,7 +17,7 @@ import { handleTextReply } from './handlers/text';
 /**
  * Creates and configures the single-owner grammY bot instance.
  */
-export function createBot(env: Env, db: Database): Bot<BotContext> {
+export function createBot(env: Env, db: Database, coreUrl?: string): Bot<BotContext> {
   const botOptions: any = {};
 
   if (env.BOT_INFO) {
@@ -37,6 +37,7 @@ export function createBot(env: Env, db: Database): Bot<BotContext> {
   bot.use(async (ctx, next) => {
     ctx.env = env;
     ctx.db = db;
+    ctx.coreUrl = coreUrl;
     await next();
   });
 

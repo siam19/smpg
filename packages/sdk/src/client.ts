@@ -46,8 +46,11 @@ export class SMPG {
       throw new Error('baseUrl is required (e.g. https://smpg-core.<account>.workers.dev)');
     }
 
-    this.apiKey = apiKey;
-    this.baseUrl = options.baseUrl.replace(/\/+$/, '');
+    this.apiKey = apiKey.trim();
+    this.baseUrl = options.baseUrl
+      .trim()
+      .replace(/\/+$/, '')
+      .replace(/\/v1(?:\/payments)?$/i, '');
     this.defaultWebhookSecret = options.webhookSecret;
     this.timeoutMs = options.timeoutMs ?? 15000;
   }

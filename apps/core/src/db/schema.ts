@@ -40,6 +40,7 @@ export const apiKeys = sqliteTable('api_keys', {
     .notNull()
     .references(() => stores.id, { onDelete: 'cascade' }),
   keyHash: text('key_hash').notNull().unique(),
+  encryptedKey: text('encrypted_key'), // AES-GCM encrypted full key for owner retrieval in Telegram
   prefix: text('prefix').notNull(), // e.g. smpg_live_ab12
   mode: text('mode').notNull(), // 'test' | 'live'
   revokedAt: integer('revoked_at'),

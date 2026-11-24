@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { SMPGCheckout } from '../src/checkout';
-import { SMPGError } from '../src/client';
+import { SMPG, SMPGError } from '../src/client';
 
 describe('SMPGCheckout', () => {
   test('throws a clear error when baseUrl is missing or empty', () => {
@@ -122,6 +122,41 @@ describe('SMPGCheckout', () => {
       'POST https://smpg.example.workers.dev/c/pay_2/submit',
       'GET https://smpg.example.workers.dev/c/pay_2/status',
     ]);
+  });
+
+  test('strips accidental /v1 or /v1/payments suffix from baseUrl in SMPG and SMPGCheckout', async () => {
+    const calledUrls: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      calledUrls.push(String(input));
+      return new Response(JSON.stringify({ id: 'pay_norm', status: 'CREATED', attempts: 0 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    try {
+      const smpgFromV1 = new SMPG('smpg_test_key', {
+        baseUrl: 'https://smpg.example.workers.dev/v1/',
+      });
+      await smpgFromV1.payments.create({ amount: 500 });
+
+      const smpgFromPayments = new SMPG('smpg_test_key', {
+        baseUrl: 'https://smpg.example.workers.dev/v1/payments',
+      });
+      await smpgFromPayments.payments.create({ amount: 500 });
+
+      const checkoutFromV1 = new SMPGCheckout('https://smpg.example.workers.dev/v1');
+      await checkoutFromV1.getStatus('pay_norm');
+
+      expect(calledUrls).toEqual([
+        'https://smpg.example.workers.dev/v1/payments',
+        'https://smpg.example.workers.dev/v1/payments',
+        'https://smpg.example.workers.dev/c/pay_norm/status',
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test('throws SMPGError on non-2xx checkout API response', async () => {

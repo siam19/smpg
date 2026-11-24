@@ -108,12 +108,26 @@ bun add send-money-payment-gateway
 pnpm add send-money-payment-gateway
 ```
 
+### Environment Variables & Retrieving Credentials
+
+Get all server credentials in one tap from your private Telegram bot: **`/stores` -> select your store -> `View Server Credentials`** (every value is tap-to-copy, plus a ready-to-paste `.env` block):
+
+```env
+# Server-only (NEVER expose to browser)
+SMPG_CORE_URL="https://smpg-core.<subdomain>.workers.dev"   # Root Worker origin ONLY (no /v1 or /v1/payments suffix!)
+SMPG_SECRET_KEY="smpg_live_..."                              # Or smpg_test_... for test mode
+SMPG_WEBHOOK_SECRET="whsec_..."
+
+# Public (safe for browser-side SMPGCheckout)
+NEXT_PUBLIC_SMPG_CORE_URL="https://smpg-core.<subdomain>.workers.dev"
+```
+
 ### Initializing the Server Client
 ```typescript
 import { SMPG } from 'send-money-payment-gateway';
 
 export const smpg = new SMPG(process.env.SMPG_SECRET_KEY!, {
-  baseUrl: process.env.SMPG_CORE_URL!, // Your self-hosted Worker URL, e.g. https://smpg-core.<subdomain>.workers.dev
+  baseUrl: process.env.SMPG_CORE_URL!, // Root Worker origin ONLY (e.g. https://smpg-core.<subdomain>.workers.dev — no /v1 suffix)
   webhookSecret: process.env.SMPG_WEBHOOK_SECRET,
   timeoutMs: 15000,
 });
@@ -622,6 +636,7 @@ export function EmbeddedPaymentBox({ paymentId, baseUrl, onSubmitted }: Props) {
      `ngrok http 3000`
    - Set your store's webhook URL in Telegram (`/stores` -> select store -> Webhook URL) to `https://<your-subdomain>.ngrok-free.app/api/webhooks/smpg`.
 3. **Common Pitfalls to Avoid**:
+   - **Never append `/v1` or `/v1/payments` to `SMPG_CORE_URL` / `baseUrl`**: Pass ONLY the root Worker origin (e.g. `https://smpg-core.<subdomain>.workers.dev`). Appending `/v1` or `/v1/payments` causes `404 Not Found` on older SDK versions when the SDK appends `/v1/payments`.
    - Never compute HMAC on `JSON.stringify(req.body)`. Always use raw unparsed bytes/string.
    - Never read `smpg-signature`; the header is `x-smpg-signature`.
    - Never mark an order `PAID` when `checkout.submit()` resolves. Wait for the `payment.paid` webhook.
@@ -642,4 +657,4 @@ Before considering an SMPG integration task complete, verify the following:
 - [ ] Webhook route handles `payment.paid` idempotently (ignores duplicate events).
 - [ ] Webhook route handles `payment.confirmed` for Cash on Delivery.
 - [ ] Webhook route handles `payment.rejected` (allows customer to retry on the storefront order page) and `payment.reopened`.
-- [ ] Environment variables configured: `SMPG_SECRET_KEY`, `SMPG_CORE_URL`, `SMPG_WEBHOOK_SECRET`.
+- [ ] Environment variables configured: `SMPG_SECRET_KEY`, `SMPG_CORE_URL` (root Worker origin without `/v1`), `SMPG_WEBHOOK_SECRET`, and (if using `SMPGCheckout`) `NEXT_PUBLIC_SMPG_CORE_URL`.

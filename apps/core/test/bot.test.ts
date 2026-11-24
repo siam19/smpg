@@ -4,6 +4,8 @@ import { join } from 'path';
 import { eq } from 'drizzle-orm';
 import { app } from '../src/index';
 import { createBot } from '../src/bot';
+import { createStoreWithCredentials } from '../src/bot/commands/stores';
+import { renderStoreServerCredentials } from '../src/bot/callbacks/menu';
 import { createTestD1 } from './helpers/mock-d1';
 import { applyPaymentDecision } from '../src/services/decision';
 import {
@@ -347,6 +349,43 @@ describe('Telegram Bot & Views (Sprint 7)', () => {
       .inline_keyboard.flat()
       .map((b) => b.text);
     expect(mainLabels).toEqual(['Stores', 'Wallets', 'Payments', 'Help']);
+
+    const storeLabels = createStoreDetailKeyboard(mockStore)
+      .inline_keyboard.flat()
+      .map((b) => b.text);
+    expect(storeLabels).toContain('View Server Credentials');
+  });
+
+  test('View Server Credentials displays copyable SMPG_CORE_URL, SMPG_SECRET_KEY, and SMPG_WEBHOOK_SECRET', async () => {
+    const { d1, db } = createTestD1();
+    const env = createMockBotEnv(d1);
+    const bundle = await createStoreWithCredentials(db, env, 'NextJS Demo');
+
+    const replies: Array<{ text: string; options?: any }> = [];
+    const mockCtx: any = {
+      isOwner: true,
+      ownerChatId: 123456,
+      db,
+      env,
+      coreUrl: 'https://smpg-core.example.workers.dev',
+      reply: async (text: string, options?: any) => {
+        replies.push({ text, options });
+      },
+    };
+
+    await renderStoreServerCredentials(mockCtx, bundle.store.id);
+
+    expect(replies.length).toBe(1);
+    const msg = replies[0].text;
+    expect(replies[0].options?.parse_mode).toBe('HTML');
+    expect(msg).toContain('<code>https://smpg-core.example.workers.dev</code>');
+    expect(msg).toContain(`<code>${bundle.liveKey}</code>`);
+    expect(msg).toContain(`<code>${bundle.testKey}</code>`);
+    expect(msg).toContain(`<code>${bundle.webhookSecret}</code>`);
+    expect(msg).toContain('SMPG_CORE_URL=https://smpg-core.example.workers.dev');
+    expect(msg).toContain(`SMPG_SECRET_KEY=${bundle.liveKey}`);
+    expect(msg).toContain(`SMPG_WEBHOOK_SECRET=${bundle.webhookSecret}`);
+    expect(EMOJI_REGEX.test(msg)).toBe(false);
   });
 
   test('applyPaymentDecision updates pending decision and starts undo countdown', async () => {
