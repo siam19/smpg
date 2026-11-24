@@ -1,3 +1,5 @@
+import type { AssignedWallet, PaymentMethod } from 'send-money-payment-gateway';
+
 export type OrderStatus =
   | 'PENDING_PAYMENT'
   | 'AWAITING_VERIFICATION'
@@ -14,7 +16,9 @@ export interface Order {
   totalAmount: number; // BDT
   status: OrderStatus;
   smpgPaymentId?: string;
-  paymentMethod?: 'bkash' | 'nagad' | 'cod';
+  paymentMethod?: PaymentMethod;
+  availableMethods?: PaymentMethod[];
+  assignedWallet?: AssignedWallet | null;
   trxId?: string;
   retryUrl?: string;
   paidAt?: Date;

@@ -1,23 +1,25 @@
 openapi: 3.1.0
 info:
   title: SMPG API (Send Money Payment Gateway)
-  version: 0.1.0
+  version: 0.2.0
   description: >-
-    Lightweight, multi-tenant payment gateway API for bKash, Nagad, and Cash on Delivery (COD).
+    Self-hosted, single-owner, multi-store payment gateway API for bKash Personal Send Money,
+    Nagad Personal Send Money, and Cash on Delivery (COD). Designed for embedded custom
+    checkout UIs and signed HMAC-SHA256 webhooks (`x-smpg-signature`).
 servers:
   - url: http://localhost:8787
     description: Local development worker
-  - url: https://smpg-core.{account}.workers.dev
-    description: Cloudflare Worker production base URL
+  - url: https://smpg-core.{subdomain}.workers.dev
+    description: Self-hosted Cloudflare Worker production base URL
     variables:
-      account:
-        default: your-account
+      subdomain:
+        default: your-subdomain
 
 paths:
   /v1/payments:
     post:
       summary: Create a payment
-      description: Creates a new payment session and returns a hosted checkout URL.
+      description: Creates a new payment session for the authenticated store.
       operationId: createPayment
       security:
         - BearerAuth: []
@@ -48,7 +50,7 @@ paths:
 
     get:
       summary: List payments
-      description: Lists payments with optional filters.
+      description: Lists payments for the authenticated store with optional filters.
       operationId: listPayments
       security:
         - BearerAuth: []
@@ -136,7 +138,9 @@ paths:
   /v1/payments/{id}/method:
     post:
       summary: Set or change payment method
-      description: Sets payment method (bkash, nagad, or cod) on a CREATED payment and allocates an active wallet.
+      description: >-
+        Sets payment method (bkash, nagad, or cod) on a CREATED payment. Allocates an active
+        wallet for bKash/Nagad, or confirms immediately and queues `payment.confirmed` for COD.
       operationId: setPaymentMethod
       security:
         - BearerAuth: []
@@ -171,7 +175,9 @@ paths:
   /v1/payments/{id}/submit:
     post:
       summary: Submit customer TrxID via authenticated API
-      description: Submits TrxID on behalf of a customer from the merchant backend, burns TrxID in live mode, transitions to SUBMITTED, and dispatches Telegram notification.
+      description: >-
+        Submits TrxID on behalf of a customer from the storefront backend, burns TrxID in live
+        mode, transitions to SUBMITTED, and dispatches a Telegram notification to the owner.
       operationId: submitPaymentTrx
       security:
         - BearerAuth: []
@@ -210,7 +216,9 @@ paths:
   /c/{id}/data:
     get:
       summary: Get public checkout session data
-      description: Returns store branding, assigned wallet number, amount, and allowed methods for the hosted or embedded checkout interface.
+      description: >-
+        Returns store name, assigned wallet number, amount, status, and available methods for
+        embedded custom checkout UIs (browser-safe, CORS enabled, no API key required).
       operationId: getPublicCheckoutData
       parameters:
         - name: id
@@ -230,7 +238,7 @@ paths:
 
   /c/{id}/method:
     post:
-      summary: Select payment method from checkout page
+      summary: Select payment method from embedded checkout
       operationId: selectPublicPaymentMethod
       parameters:
         - name: id
@@ -250,7 +258,7 @@ paths:
                   $ref: '#/components/schemas/PaymentMethod'
       responses:
         '200':
-          description: Method chosen, wallet assigned
+          description: Method chosen, wallet assigned (or COD confirmed)
           content:
             application/json:
               schema:
@@ -261,16 +269,19 @@ paths:
                   method:
                     $ref: '#/components/schemas/PaymentMethod'
                   status:
-                    type: string
+                    $ref: '#/components/schemas/PaymentStatus'
                   assigned_wallet:
                     $ref: '#/components/schemas/AssignedWallet'
+                  redirect_url:
+                    type: string
+                    nullable: true
         '400':
           $ref: '#/components/responses/BadRequest'
 
   /c/{id}/submit:
     post:
       summary: Customer submits TrxID
-      description: Customer submits transaction ID from hosted checkout or custom checkout box.
+      description: Customer submits transaction ID from an embedded storefront checkout box.
       operationId: submitPublicPaymentDetails
       parameters:
         - name: id
@@ -312,6 +323,7 @@ paths:
                     type: string
                   redirect_url:
                     type: string
+                    nullable: true
                   attempts_remaining:
                     type: integer
         '400':
@@ -319,7 +331,7 @@ paths:
 
   /c/{id}/status:
     get:
-      summary: Get payment status for checkout/thank-you page
+      summary: Get payment status for checkout/order page
       operationId: getCustomerPaymentStatus
       parameters:
         - name: id
@@ -339,13 +351,15 @@ paths:
                     type: string
                   status:
                     $ref: '#/components/schemas/PaymentStatus'
+                  attempts:
+                    type: integer
 
 components:
   securitySchemes:
     BearerAuth:
       type: http
       scheme: bearer
-      description: API Key prefix `smpg_live_` or `smpg_test_`
+      description: Store API Key prefix `smpg_live_` or `smpg_test_`
 
   responses:
     BadRequest:
@@ -388,7 +402,6 @@ components:
       type: object
       required:
         - amount
-        - success_url
       properties:
         amount:
           type: integer
@@ -404,10 +417,14 @@ components:
         success_url:
           type: string
           format: uri
+          nullable: true
+          description: Optional storefront return URL
           example: https://shop.example/orders/ORD-1042/thanks
         cancel_url:
           type: string
           format: uri
+          nullable: true
+          description: Optional storefront cancel URL
           example: https://shop.example/cart
         metadata:
           type: object
@@ -430,32 +447,48 @@ components:
           nullable: true
           example: Main Personal
 
+    CheckoutStoreInfo:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          example: str_abc123
+        name:
+          type: string
+          example: My Store
+
     Payment:
       type: object
       required:
         - id
+        - store_id
         - amount
         - status
-        - success_url
         - expires_at
         - created_at
       properties:
         id:
           type: string
           example: pay_8f2k
-        merchant_id:
+        store_id:
           type: string
+          example: str_abc123
         mode:
           type: string
           enum: [test, live]
         external_order_id:
           type: string
+          nullable: true
         method:
           $ref: '#/components/schemas/PaymentMethod'
+          nullable: true
         wallet_id:
           type: string
+          nullable: true
         assigned_wallet:
           $ref: '#/components/schemas/AssignedWallet'
+          nullable: true
         available_methods:
           type: array
           items:
@@ -467,26 +500,35 @@ components:
           $ref: '#/components/schemas/PaymentStatus'
         trx_id:
           type: string
+          nullable: true
         sender_number:
           type: string
+          nullable: true
         customer_name:
           type: string
+          nullable: true
         customer_phone:
           type: string
-        checkout_url:
-          type: string
-          format: uri
+          nullable: true
         success_url:
           type: string
           format: uri
+          nullable: true
         cancel_url:
           type: string
           format: uri
+          nullable: true
         metadata:
           type: object
+          nullable: true
         pending_decision:
           type: string
           enum: [approve, reject, confirm, cancel]
+          nullable: true
+        attempts:
+          type: integer
+        attempts_remaining:
+          type: integer
         expires_at:
           type: string
           format: date-time
@@ -509,30 +551,27 @@ components:
           example: BDT
         external_order_id:
           type: string
+          nullable: true
         status:
           $ref: '#/components/schemas/PaymentStatus'
         store:
-          type: object
-          properties:
-            name:
-              type: string
-            brand_color:
-              type: string
-            logo_key:
-              type: string
-              nullable: true
+          $ref: '#/components/schemas/CheckoutStoreInfo'
         available_methods:
           type: array
           items:
             $ref: '#/components/schemas/PaymentMethod'
         method:
           $ref: '#/components/schemas/PaymentMethod'
+          nullable: true
         assigned_wallet:
           $ref: '#/components/schemas/AssignedWallet'
+          nullable: true
         trx_id:
           type: string
+          nullable: true
         sender_number:
           type: string
+          nullable: true
         attempts:
           type: integer
         attempts_remaining:
@@ -546,11 +585,16 @@ components:
           type: boolean
         success_url:
           type: string
+          nullable: true
         cancel_url:
           type: string
+          nullable: true
 
     WebhookEvent:
       type: object
+      description: >-
+        Delivered via HTTP POST signed with HMAC-SHA256 in the `x-smpg-signature` header
+        (`t=<unix_seconds>,v1=<hex_hmac>`).
       required: [id, type, created, data]
       properties:
         id:

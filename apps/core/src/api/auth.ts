@@ -1,12 +1,12 @@
 import { createMiddleware } from 'hono/factory';
 import { and, eq, isNull } from 'drizzle-orm';
 import { createDb } from '../db';
-import { apiKeys, merchants, type ApiKey, type Merchant } from '../db/schema';
+import { apiKeys, stores, type ApiKey, type Store } from '../db/schema';
 import { sha256 } from '../services/crypto';
 import type { Env } from '../types';
 
 export interface ApiVariables {
-  merchant: Merchant;
+  store: Store;
   mode: 'test' | 'live';
   apiKey: ApiKey;
 }
@@ -47,10 +47,10 @@ export const authMiddleware = createMiddleware<{
   const keyRecord = await db
     .select({
       apiKey: apiKeys,
-      merchant: merchants,
+      store: stores,
     })
     .from(apiKeys)
-    .innerJoin(merchants, eq(apiKeys.merchantId, merchants.id))
+    .innerJoin(stores, eq(apiKeys.storeId, stores.id))
     .where(and(eq(apiKeys.keyHash, keyHashed), isNull(apiKeys.revokedAt)))
     .get();
 
@@ -66,19 +66,19 @@ export const authMiddleware = createMiddleware<{
     );
   }
 
-  if (keyRecord.merchant.paused === 1) {
+  if (keyRecord.store.paused === 1) {
     return c.json(
       {
         error: {
-          code: 'merchant_paused',
-          message: 'This merchant account is currently paused. Please resume via Telegram bot.',
+          code: 'store_paused',
+          message: 'This store is currently paused. Please resume via Telegram bot.',
         },
       },
       403
     );
   }
 
-  c.set('merchant', keyRecord.merchant);
+  c.set('store', keyRecord.store);
   c.set('mode', keyRecord.apiKey.mode as 'test' | 'live');
   c.set('apiKey', keyRecord.apiKey);
 

@@ -2,34 +2,20 @@ import { Bot } from 'grammy';
 import type { Database } from '../db';
 import type { Env } from '../types';
 import type { BotContext } from './context';
-import { authMiddleware, requireMerchant } from './middleware/auth';
+import { authMiddleware, requireOwner } from './middleware/auth';
 import { handleBotError } from './middleware/error';
 import { handleStartCommand } from './commands/start';
-import {
-  handleAddWalletCommand,
-  handleWalletsCommand,
-} from './commands/wallets';
-import {
-  handleBrandColorCommand,
-  handleCodToggleCommand,
-  handleHelpCommand,
-  handleSettingsCommand,
-  handleStoreNameCommand,
-  handleWebhookCommand,
-} from './commands/settings';
-import { handleKeysCommand, handleStorePauseCommand } from './commands/keys';
+import { handleHelpCommand, handleStoresCommand } from './commands/stores';
+import { handleAddWalletCommand, handleWalletsCommand } from './commands/wallets';
 import { handlePaymentsListCommand, handleReopenCommand } from './commands/payments';
 import { handleTestCommand } from './commands/test';
 import { handleDecisionCallback } from './callbacks/decision';
 import { handleUndoCallback } from './callbacks/undo';
 import { handleMenuCallback } from './callbacks/menu';
-import { handleOnboardingCallback, handleStartOnboarding, handleLogoutCommand } from './handlers/onboarding';
 import { handleTextReply } from './handlers/text';
-import { merchants } from '../db/schema';
-import { eq } from 'drizzle-orm';
 
 /**
- * Creates and configures the grammY bot instance.
+ * Creates and configures the single-owner grammY bot instance.
  */
 export function createBot(env: Env, db: Database): Bot<BotContext> {
   const botOptions: any = {};
@@ -54,51 +40,21 @@ export function createBot(env: Env, db: Database): Bot<BotContext> {
     await next();
   });
 
-  // Authentication middleware
+  // Strict single-owner authentication middleware
   bot.use(authMiddleware);
 
-  // Public / onboarding commands
+  // Entry & claim command (handles owner lock and SETUP_TOKEN claim internally)
   bot.command('start', handleStartCommand);
-  bot.command('help', handleHelpCommand);
-  bot.command('logout', handleLogoutCommand);
 
-  // Command to reset onboarding (useful for testing or re-onboarding)
-  bot.command(['reset', 'restart'], async (ctx) => {
-    if (ctx.merchant) {
-      await ctx.db
-        .update(merchants)
-        .set({
-          onboardingStep: 'name',
-          ownerName: null,
-          phoneNumber: null,
-          canProvideNid: 0,
-        })
-        .where(eq(merchants.id, ctx.merchant.id));
-      ctx.merchant.onboardingStep = 'name';
-      ctx.merchant.ownerName = null;
-      ctx.merchant.phoneNumber = null;
-      ctx.merchant.canProvideNid = 0;
-    }
-    await handleStartOnboarding(ctx);
-  });
-
-  // Primary interactive dashboards
-  bot.command('wallets', requireMerchant, handleWalletsCommand);
-  bot.command('settings', requireMerchant, handleSettingsCommand);
-  bot.command('payments', requireMerchant, handlePaymentsListCommand);
-  bot.command('keys', requireMerchant, handleKeysCommand);
-
-  // Quick action commands (support both direct args & ForceReply prompts)
-  bot.command('add_bkash', requireMerchant, (ctx) => handleAddWalletCommand(ctx, 'bkash'));
-  bot.command('add_nagad', requireMerchant, (ctx) => handleAddWalletCommand(ctx, 'nagad'));
-  bot.command('store_name', requireMerchant, handleStoreNameCommand);
-  bot.command('brand_color', requireMerchant, handleBrandColorCommand);
-  bot.command('cod', requireMerchant, handleCodToggleCommand);
-  bot.command('webhook', requireMerchant, handleWebhookCommand);
-  bot.command('pause', requireMerchant, (ctx) => handleStorePauseCommand(ctx, true));
-  bot.command('resume', requireMerchant, (ctx) => handleStorePauseCommand(ctx, false));
-  bot.command('reopen', requireMerchant, handleReopenCommand);
-  bot.command('test', requireMerchant, handleTestCommand);
+  // Owner-only dashboards and commands
+  bot.command('help', requireOwner, handleHelpCommand);
+  bot.command('stores', requireOwner, handleStoresCommand);
+  bot.command('wallets', requireOwner, handleWalletsCommand);
+  bot.command('payments', requireOwner, handlePaymentsListCommand);
+  bot.command('reopen', requireOwner, handleReopenCommand);
+  bot.command('test', requireOwner, handleTestCommand);
+  bot.command('add_bkash', requireOwner, (ctx) => handleAddWalletCommand(ctx, 'bkash'));
+  bot.command('add_nagad', requireOwner, (ctx) => handleAddWalletCommand(ctx, 'nagad'));
 
   // Payment decision callbacks: v1:approve:pay_123:nonce
   bot.callbackQuery(/^v1:(approve|reject|confirm|cancel):([^:]+):.+$/, async (ctx) => {
@@ -114,20 +70,14 @@ export function createBot(env: Env, db: Database): Bot<BotContext> {
     await handleUndoCallback(ctx, paymentId);
   });
 
-  // Onboarding callbacks
-  bot.callbackQuery(/^onboarding:.+$/, async (ctx) => {
-    const data = ctx.callbackQuery.data;
-    await handleOnboardingCallback(ctx, data);
-  });
-
   // Dashboard navigation and interactive action callbacks
-  bot.callbackQuery(/^(menu|wallet|settings|keys|pay):.+$/, async (ctx) => {
+  bot.callbackQuery(/^(menu|store|wallet|keys|pay):.+$/, async (ctx) => {
     const data = ctx.callbackQuery.data;
     await handleMenuCallback(ctx, data);
   });
 
-  // Handle incoming text messages (onboarding progression & replies to ForceReply prompts)
-  bot.on('message:text', async (ctx, next) => {
+  // Handle incoming text messages (ForceReply prompts & quick payment decisions)
+  bot.on('message:text', requireOwner, async (ctx, next) => {
     await handleTextReply(ctx);
     await next();
   });

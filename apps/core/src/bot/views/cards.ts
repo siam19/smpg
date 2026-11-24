@@ -1,13 +1,18 @@
-import type { Payment, MerchantWallet } from '../../db/schema';
+import type { Payment, Wallet } from '../../db/schema';
 
 /**
  * Formats a bKash or Nagad payment submission card.
  */
-export function formatSubmittedCard(payment: Payment, wallet?: MerchantWallet | null): string {
+export function formatSubmittedCard(
+  payment: Payment,
+  wallet?: Wallet | null,
+  storeName?: string
+): string {
   const isBkash = payment.method === 'bkash';
   const methodLabel = isBkash ? 'bKash' : 'Nagad';
   const trxLabel = isBkash ? 'TrxID' : 'TxnID';
-  const lateBadge = payment.lateSubmission ? ' ⏰ submitted late' : '';
+  const storePrefix = storeName ? `[${storeName}] ` : '';
+  const lateBadge = payment.lateSubmission ? ' [LATE]' : '';
   const orderRef = payment.externalOrderId ? ` · ${payment.externalOrderId}` : '';
 
   const walletDisplay = wallet
@@ -15,7 +20,7 @@ export function formatSubmittedCard(payment: Payment, wallet?: MerchantWallet | 
     : payment.walletId || 'Assigned Wallet';
 
   const lines = [
-    `💸 <b>${methodLabel} payment${orderRef}${lateBadge}</b>`,
+    `<b>${storePrefix}${methodLabel} Payment${orderRef}${lateBadge}</b>`,
     `<b>Amount:</b> ৳${payment.amount.toLocaleString('en-BD')}`,
     `<b>Wallet:</b> <code>${walletDisplay}</code>`,
     `<b>${trxLabel}:</b> <code>${payment.trxId || 'N/A'}</code>`,
@@ -27,7 +32,9 @@ export function formatSubmittedCard(payment: Payment, wallet?: MerchantWallet | 
 
   lines.push(`<b>ID:</b> <code>${payment.id}</code>`);
   lines.push('');
-  lines.push(`<i>Verify in ${methodLabel}. Reply <b>"ok"</b> (or <b>"y"</b>) to approve, <b>"no"</b> to reject.</i>`);
+  lines.push(
+    `<i>Verify in ${methodLabel}. Reply <b>"ok"</b> (or <b>"y"</b>) to approve, <b>"no"</b> to reject.</i>`
+  );
 
   return lines.join('\n');
 }
@@ -35,13 +42,14 @@ export function formatSubmittedCard(payment: Payment, wallet?: MerchantWallet | 
 /**
  * Formats a Cash on Delivery (COD) notification card.
  */
-export function formatCodCard(payment: Payment): string {
+export function formatCodCard(payment: Payment, storeName?: string): string {
+  const storePrefix = storeName ? `[${storeName}] ` : '';
   const orderRef = payment.externalOrderId ? ` · ${payment.externalOrderId}` : '';
   const customerName = payment.customerName || 'Customer';
   const customerPhone = payment.customerPhone ? ` ${payment.customerPhone}` : '';
 
   return [
-    `📦 <b>COD order${orderRef}</b>`,
+    `<b>${storePrefix}COD Order${orderRef}</b>`,
     `<b>Amount:</b> ৳${payment.amount.toLocaleString('en-BD')}`,
     `<b>Customer:</b> ${customerName}${customerPhone}`,
     `<b>ID:</b> <code>${payment.id}</code>`,
@@ -62,20 +70,20 @@ export function appendGracePeriodStatus(
   let label = '';
   switch (action) {
     case 'approve':
-      label = '⏳ Approving';
+      label = 'Approving';
       break;
     case 'reject':
-      label = '❌ Rejecting';
+      label = 'Rejecting';
       break;
     case 'confirm':
-      label = '📦 Confirming';
+      label = 'Confirming';
       break;
     case 'cancel':
-      label = '🚫 Cancelling';
+      label = 'Cancelling';
       break;
   }
 
-  return `${originalCard}\n\n<b>${label} by ${actor}</b> · final at <code>${deadlineIsoOrTime}</code>`;
+  return `${originalCard}\n\n<b>[${label}] by ${actor}</b> · final at <code>${deadlineIsoOrTime}</code>`;
 }
 
 /**
@@ -89,16 +97,16 @@ export function appendFinalDecisionStatus(
 ): string {
   let badge = '';
   if (action === 'approve' || action === 'PAID') {
-    badge = '✅ Approved';
+    badge = 'Approved';
   } else if (action === 'reject' || action === 'REJECTED') {
-    badge = '❌ Rejected';
+    badge = 'Rejected';
   } else if (action === 'confirm' || action === 'CONFIRMED') {
-    badge = '📦 Confirmed';
+    badge = 'Confirmed';
   } else if (action === 'cancel' || action === 'CANCELLED') {
-    badge = '🚫 Cancelled';
+    badge = 'Cancelled';
   } else {
     badge = `Decision: ${action}`;
   }
 
-  return `${originalCard}\n\n<b>${badge} by ${actor} · ${timeString}</b>`;
+  return `${originalCard}\n\n<b>[${badge}] by ${actor} · ${timeString}</b>`;
 }

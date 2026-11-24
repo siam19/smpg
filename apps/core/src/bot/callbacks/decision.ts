@@ -1,13 +1,14 @@
 import type { BotContext } from '../context';
 import { applyPaymentDecision } from '../../services/decision';
+import { ACCESS_DENIED_MESSAGE } from '../middleware/auth';
 
 export async function handleDecisionCallback(
   ctx: BotContext,
   action: 'approve' | 'reject' | 'confirm' | 'cancel',
   paymentId: string
 ) {
-  if (!ctx.merchant) {
-    await ctx.answerCallbackQuery({ text: 'Unauthorized', show_alert: true });
+  if (!ctx.isOwner || !ctx.ownerChatId) {
+    await ctx.answerCallbackQuery({ text: ACCESS_DENIED_MESSAGE, show_alert: true });
     return;
   }
 
@@ -18,8 +19,7 @@ export async function handleDecisionCallback(
   const result = await applyPaymentDecision({
     db: ctx.db,
     env: ctx.env,
-    merchantId: ctx.merchant.id,
-    telegramChatId: ctx.merchant.telegramChatId,
+    telegramChatId: ctx.ownerChatId,
     paymentId,
     action,
     actorName,

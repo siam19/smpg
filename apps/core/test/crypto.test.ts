@@ -12,8 +12,11 @@ describe('Crypto Utilities', () => {
   const testKeyHex = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
   test('generates valid IDs and keys', () => {
-    const mrcId = generatePrefixedId('mrc');
-    expect(mrcId.startsWith('mrc_')).toBeTrue();
+    const storeId = generatePrefixedId('str');
+    expect(storeId.startsWith('str_')).toBeTrue();
+
+    const walletId = generatePrefixedId('wal');
+    expect(walletId.startsWith('wal_')).toBeTrue();
 
     const liveKey = generateApiKey('live');
     expect(liveKey.key.startsWith('smpg_live_')).toBeTrue();

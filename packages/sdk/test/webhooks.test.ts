@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { constructEvent, WebhookVerificationError } from '../src/webhooks';
 
-describe('Webhook Verification', () => {
+describe('Webhook Verification (x-smpg-signature)', () => {
   const secret = 'whsec_test_secret_1234567890';
 
   async function generateSignature(secret: string, timestamp: number, body: string): Promise<string> {
@@ -20,12 +20,25 @@ describe('Webhook Verification', () => {
     return `t=${timestamp},v1=${hex}`;
   }
 
-  test('successfully verifies valid signature', async () => {
+  test('successfully verifies valid x-smpg-signature with normalized snake_case Payment payload', async () => {
     const body = JSON.stringify({
       id: 'evt_123',
       type: 'payment.paid',
       created: 1731330000,
-      data: { id: 'pay_123', status: 'PAID' },
+      data: {
+        id: 'pay_123',
+        store_id: 'str_abc123',
+        mode: 'live',
+        external_order_id: 'ORD-1001',
+        method: 'bkash',
+        amount: 1500,
+        status: 'PAID',
+        attempts: 1,
+        attempts_remaining: 2,
+        success_url: null,
+        expires_at: '2026-11-24T12:00:00.000Z',
+        created_at: '2026-11-24T11:00:00.000Z',
+      },
     });
     const now = Math.floor(Date.now() / 1000);
     const sig = await generateSignature(secret, now, body);
@@ -34,6 +47,10 @@ describe('Webhook Verification', () => {
     expect(event.id).toBe('evt_123');
     expect(event.type).toBe('payment.paid');
     expect(event.data.id).toBe('pay_123');
+    expect(event.data.store_id).toBe('str_abc123');
+    expect(event.data.external_order_id).toBe('ORD-1001');
+    expect(event.data.attempts).toBe(1);
+    expect(event.data.attempts_remaining).toBe(2);
   });
 
   test('fails if signature is invalid', async () => {
@@ -41,7 +58,16 @@ describe('Webhook Verification', () => {
     const now = Math.floor(Date.now() / 1000);
     const sig = `t=${now},v1=badhexsignature`;
 
-    expect(constructEvent(body, sig, secret)).rejects.toThrow(WebhookVerificationError);
+    await expect(constructEvent(body, sig, secret)).rejects.toThrow(WebhookVerificationError);
+  });
+
+  test('fails if signature header is missing or malformed', async () => {
+    const body = JSON.stringify({ id: 'evt_123' });
+
+    await expect(constructEvent(body, '', secret)).rejects.toThrow(WebhookVerificationError);
+    await expect(constructEvent(body, 'invalid_header', secret)).rejects.toThrow(
+      WebhookVerificationError
+    );
   });
 
   test('fails if timestamp is expired', async () => {
@@ -49,8 +75,8 @@ describe('Webhook Verification', () => {
     const expiredTime = Math.floor(Date.now() / 1000) - 600; // 10 minutes ago
     const sig = await generateSignature(secret, expiredTime, body);
 
-    expect(constructEvent(body, sig, secret, { toleranceSeconds: 300 })).rejects.toThrow(
-      WebhookVerificationError
-    );
+    await expect(
+      constructEvent(body, sig, secret, { toleranceSeconds: 300 })
+    ).rejects.toThrow(WebhookVerificationError);
   });
 });

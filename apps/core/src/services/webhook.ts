@@ -2,19 +2,20 @@ import { and, eq, isNull, lte } from 'drizzle-orm';
 import { Bot } from 'grammy';
 import type { Database } from '../db';
 import {
-  merchants,
   payments,
+  stores,
   webhookDeliveries,
   type WebhookDelivery,
 } from '../db/schema';
 import { decryptAesGcm, generatePrefixedId } from './crypto';
+import { getOwnerChatId } from './notification';
 import type { Env } from '../types';
 
 /**
  * Exponential backoff retry delays in seconds:
  * Attempt 1 fail -> retry in 1 minute (60s)
  * Attempt 2 fail -> retry in 5 minutes (300s)
- * Attempt 3 fail -> retry in 30 minutes (1800s) + Alert merchant in Telegram
+ * Attempt 3 fail -> retry in 30 minutes (1800s) + Alert owner in Telegram
  * Attempt 4 fail -> retry in 2 hours (7200s)
  * Attempt 5 fail -> retry in 12 hours (43200s)
  * After 5 attempts -> marked failed (no more retries)
@@ -97,6 +98,7 @@ export async function deliverWebhookPayload(
 export async function queueWebhookDelivery(
   db: Database,
   paymentId: string,
+  storeId: string,
   eventType: string,
   eventData: Record<string, unknown>
 ): Promise<WebhookDelivery> {
@@ -113,6 +115,7 @@ export async function queueWebhookDelivery(
   const newDelivery: WebhookDelivery = {
     id: deliveryId,
     paymentId,
+    storeId,
     eventType,
     payload: JSON.stringify(payloadObj),
     attempt: 0,
@@ -145,21 +148,21 @@ export async function deliverSingleWebhook(
     return false;
   }
 
-  const merchant = await db
+  const store = await db
     .select()
-    .from(merchants)
-    .where(eq(merchants.id, payment.merchantId))
+    .from(stores)
+    .where(eq(stores.id, delivery.storeId || payment.storeId))
     .get();
 
-  if (!merchant) {
-    console.error(`[Webhook] Merchant not found for delivery ${delivery.id}`);
+  if (!store) {
+    console.error(`[Webhook] Store not found for delivery ${delivery.id}`);
     return false;
   }
 
   const now = Math.floor(Date.now() / 1000);
 
-  // If merchant has no webhook URL configured, mark delivered/skipped
-  if (!merchant.webhookUrl) {
+  // If store has no webhook URL configured, mark delivered/skipped
+  if (!store.webhookUrl) {
     await db
       .update(webhookDeliveries)
       .set({
@@ -173,14 +176,14 @@ export async function deliverSingleWebhook(
 
   let secret: string;
   try {
-    secret = await decryptAesGcm(merchant.webhookSecret, env.ENCRYPTION_KEY);
+    secret = await decryptAesGcm(store.webhookSecret, env.ENCRYPTION_KEY);
   } catch (decryptErr) {
-    console.error(`[Webhook] Failed to decrypt webhook secret for merchant ${merchant.id}:`, decryptErr);
+    console.error(`[Webhook] Failed to decrypt webhook secret for store ${store.id}:`, decryptErr);
     return false;
   }
 
   const res = await deliverWebhookPayload(
-    merchant.webhookUrl,
+    store.webhookUrl,
     secret,
     delivery.eventType,
     delivery.payload
@@ -219,23 +222,26 @@ export async function deliverSingleWebhook(
     })
     .where(eq(webhookDeliveries.id, delivery.id));
 
-  // Alert merchant in Telegram if 3 consecutive failures
-  if (nextAttemptNum === 3 && bot && merchant.telegramChatId) {
-    try {
-      const orderRef = payment.externalOrderId ? ` (${payment.externalOrderId})` : '';
-      const alertMsg = [
-        '⚠️ <b>Webhook Delivery Alert</b>',
-        `We failed to deliver event <code>${delivery.eventType}</code> for payment <code>${payment.id}</code>${orderRef} after 3 attempts.`,
-        '',
-        `<b>Webhook Endpoint:</b> <code>${merchant.webhookUrl}</code>`,
-        `<b>Last Response:</b> <code>${res.status || res.error || 'Connection Failed'}</code>`,
-        '',
-        '<i>We will continue retrying with exponential backoff. Please inspect your server logs to ensure your endpoint returns a 2xx status code.</i>',
-      ].join('\n');
+  // Alert owner in Telegram after 3 consecutive failures
+  if (nextAttemptNum === 3 && bot) {
+    const ownerChatId = await getOwnerChatId(db, env);
+    if (ownerChatId) {
+      try {
+        const orderRef = payment.externalOrderId ? ` (${payment.externalOrderId})` : '';
+        const alertMsg = [
+          `<b>[Webhook Delivery Alert] ${store.name}</b>`,
+          `Failed to deliver event <code>${delivery.eventType}</code> for payment <code>${payment.id}</code>${orderRef} after 3 attempts.`,
+          '',
+          `<b>Webhook Endpoint:</b> <code>${store.webhookUrl}</code>`,
+          `<b>Last Response:</b> <code>${res.status || res.error || 'Connection Failed'}</code>`,
+          '',
+          '<i>Retries will continue with exponential backoff. Please inspect your server logs to ensure your endpoint returns a 2xx status code.</i>',
+        ].join('\n');
 
-      await bot.api.sendMessage(merchant.telegramChatId, alertMsg, { parse_mode: 'HTML' });
-    } catch (botErr) {
-      console.error('[Webhook] Failed to dispatch failure alert to Telegram:', botErr);
+        await bot.api.sendMessage(ownerChatId, alertMsg, { parse_mode: 'HTML' });
+      } catch (botErr) {
+        console.error('[Webhook] Failed to dispatch failure alert to Telegram:', botErr);
+      }
     }
   }
 

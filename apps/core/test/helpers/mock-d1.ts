@@ -62,17 +62,14 @@ export class MockD1Database {
   }
 }
 
-export function createTestD1(): { d1: D1Database; db: ReturnType<typeof drizzle> } {
+export function createTestD1(): { d1: D1Database; db: ReturnType<typeof drizzle<typeof schema>> } {
   const sqlite = new Database(':memory:');
+  sqlite.exec('PRAGMA foreign_keys = ON;');
 
   const migrationsDir = join(__dirname, '../../migrations');
   const m1 = readFileSync(join(migrationsDir, '0001_initial_schema.sql'), 'utf-8');
-  const m2 = readFileSync(join(migrationsDir, '0002_merchant_onboarding.sql'), 'utf-8');
-  const m3 = readFileSync(join(migrationsDir, '0003_nullable_payment_method.sql'), 'utf-8');
 
   sqlite.exec(m1);
-  sqlite.exec(m2);
-  sqlite.exec(m3);
 
   const mockD1 = new MockD1Database(sqlite);
   const db = drizzle(mockD1 as unknown as D1Database, { schema });

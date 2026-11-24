@@ -1,23 +1,22 @@
 import { Hono } from 'hono';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { createDb } from '../db';
-import {
-  merchants,
-  merchantWallets,
-  paymentEvents,
-  payments,
-  trxSubmissions,
-  type Payment,
-} from '../db/schema';
-import { createBot } from '../bot';
-import { assignWalletForPayment, getMerchantWalletsWithUsage } from '../services/wallet';
-import {
-  sendCodNotification,
-  sendPaymentSubmissionNotification,
-} from '../services/notification';
+import { payments, stores, wallets } from '../db/schema';
+import { getAvailableMethodsForStore } from '../services/wallet';
+import { selectPaymentMethod, submitPaymentTrx } from '../services/payment';
 import type { Env, PaymentMethod } from '../types';
 
 export const checkoutRouter = new Hono<{ Bindings: Env }>();
+
+function buildRedirectUrl(
+  successUrl: string | null,
+  paymentId: string,
+  status: string
+): string | null {
+  if (!successUrl) return null;
+  const sep = successUrl.includes('?') ? '&' : '?';
+  return `${successUrl}${sep}payment_id=${paymentId}&status=${status}`;
+}
 
 // GET /c/:id/data (Public checkout session information)
 checkoutRouter.get('/:id/data', async (c) => {
@@ -43,59 +42,42 @@ checkoutRouter.get('/:id/data', async (c) => {
     );
   }
 
-  const merchant = await db
+  const store = await db
     .select()
-    .from(merchants)
-    .where(eq(merchants.id, payment.merchantId))
+    .from(stores)
+    .where(eq(stores.id, payment.storeId))
     .get();
 
-  if (!merchant) {
+  if (!store) {
     return c.json(
       {
         error: {
           code: 'invalid_request',
-          message: 'Merchant record not found for this payment session',
+          message: 'Store record not found for this payment session',
         },
       },
       404
     );
   }
 
-  if (merchant.paused === 1) {
+  if (store.paused === 1) {
     return c.json(
       {
         error: {
-          code: 'merchant_paused',
-          message: 'This merchant account is currently paused. Please contact seller.',
+          code: 'store_paused',
+          message: 'This store is currently paused. Please contact seller.',
         },
       },
       403
     );
   }
 
-  // Determine available methods with capacity
-  const availableMethods: PaymentMethod[] = [];
-  if (merchant.codEnabled === 1) {
-    availableMethods.push('cod');
-  }
-
-  const bkashWallets = await getMerchantWalletsWithUsage(db, merchant.id, 'bkash');
-  if (
-    bkashWallets.some(
-      (w) => w.wallet.active === 1 && w.reservedToday + payment.amount <= w.wallet.dailyLimit
-    )
-  ) {
-    availableMethods.push('bkash');
-  }
-
-  const nagadWallets = await getMerchantWalletsWithUsage(db, merchant.id, 'nagad');
-  if (
-    nagadWallets.some(
-      (w) => w.wallet.active === 1 && w.reservedToday + payment.amount <= w.wallet.dailyLimit
-    )
-  ) {
-    availableMethods.push('nagad');
-  }
+  const availableMethods = await getAvailableMethodsForStore(
+    db,
+    store.id,
+    payment.amount,
+    store.codEnabled
+  );
 
   // Look up assigned wallet if already assigned
   let assignedWallet: {
@@ -108,8 +90,8 @@ checkoutRouter.get('/:id/data', async (c) => {
   if (payment.walletId) {
     const wallet = await db
       .select()
-      .from(merchantWallets)
-      .where(eq(merchantWallets.id, payment.walletId))
+      .from(wallets)
+      .where(eq(wallets.id, payment.walletId))
       .get();
 
     if (wallet) {
@@ -138,9 +120,8 @@ checkoutRouter.get('/:id/data', async (c) => {
       external_order_id: payment.externalOrderId,
       status: payment.status,
       store: {
-        name: merchant.storeName || 'Store',
-        brand_color: merchant.brandColor || '#10B981',
-        logo_key: merchant.logoKey || null,
+        id: store.id,
+        name: store.name,
       },
       available_methods: availableMethods,
       method: payment.method as PaymentMethod | null,
@@ -183,18 +164,6 @@ checkoutRouter.post('/:id/method', async (c) => {
     );
   }
 
-  if (payment.status !== 'CREATED') {
-    return c.json(
-      {
-        error: {
-          code: 'invalid_state',
-          message: `Cannot change method for payment in ${payment.status} status. Method selection is only allowed in CREATED status.`,
-        },
-      },
-      400
-    );
-  }
-
   let body: any;
   try {
     body = await c.req.json();
@@ -210,154 +179,83 @@ checkoutRouter.post('/:id/method', async (c) => {
     );
   }
 
-  const method = body.method as PaymentMethod;
-  if (!['bkash', 'nagad', 'cod'].includes(method)) {
-    return c.json(
-      {
-        error: {
-          code: 'invalid_request',
-          message: "method must be 'bkash', 'nagad', or 'cod'",
-          param: 'method',
-        },
-      },
-      400
-    );
-  }
-
-  const merchant = await db
+  const store = await db
     .select()
-    .from(merchants)
-    .where(eq(merchants.id, payment.merchantId))
+    .from(stores)
+    .where(eq(stores.id, payment.storeId))
     .get();
 
-  if (!merchant) {
+  if (!store) {
     return c.json(
       {
         error: {
           code: 'invalid_request',
-          message: 'Merchant record not found',
+          message: 'Store record not found',
         },
       },
       404
     );
   }
 
-  const now = Math.floor(Date.now() / 1000);
-
-  if (method === 'cod') {
-    if (merchant.codEnabled === 0) {
-      return c.json(
-        {
-          error: {
-            code: 'method_not_enabled',
-            message: 'Cash on Delivery (COD) is disabled for this merchant',
-            param: 'method',
-          },
-        },
-        400
-      );
-    }
-
-    // Atomically move to CONFIRMED
-    await db
-      .update(payments)
-      .set({
-        method: 'cod',
-        walletId: null,
-        status: 'CONFIRMED',
-        updatedAt: now,
-      })
-      .where(eq(payments.id, payment.id));
-
-    await db.insert(paymentEvents).values({
-      paymentId: payment.id,
-      fromStatus: 'CREATED',
-      toStatus: 'CONFIRMED',
-      actor: 'customer',
-      note: 'Customer confirmed COD order on checkout',
-      createdAt: now,
-    });
-
-    // Dispatch COD card to Telegram
-    if (c.env.TELEGRAM_BOT_TOKEN) {
-      try {
-        const bot = createBot(c.env, db);
-        const messageId = await sendCodNotification(bot, merchant, {
-          ...payment,
-          method: 'cod',
-          status: 'CONFIRMED',
-          updatedAt: now,
-        });
-        if (messageId) {
-          let existingMeta: Record<string, any> = {};
-          if (payment.metadata) {
-            try {
-              existingMeta = JSON.parse(payment.metadata);
-            } catch {}
-          }
-          existingMeta.telegram_message_id = messageId;
-          await db
-            .update(payments)
-            .set({ metadata: JSON.stringify(existingMeta) })
-            .where(eq(payments.id, payment.id));
-        }
-      } catch (err) {
-        console.error('[Checkout] Telegram COD notification dispatch failed:', err);
-      }
-    }
-
+  if (store.paused === 1) {
     return c.json(
       {
-        id: payment.id,
+        error: {
+          code: 'store_paused',
+          message: 'This store is currently paused. Please contact seller.',
+        },
+      },
+      403
+    );
+  }
+
+  const result = await selectPaymentMethod({
+    db,
+    env: c.env,
+    payment,
+    store,
+    method: body.method as PaymentMethod,
+    actor: 'customer',
+  });
+
+  if (!result.ok) {
+    return c.json(
+      {
+        error: {
+          code: result.code,
+          message: result.message,
+          ...(result.param ? { param: result.param } : {}),
+        },
+      },
+      result.status
+    );
+  }
+
+  if (result.payment.method === 'cod') {
+    return c.json(
+      {
+        id: result.payment.id,
         method: 'cod',
         status: 'CONFIRMED',
-        redirect_url: `${payment.successUrl}${payment.successUrl.includes('?') ? '&' : '?'}payment_id=${payment.id}&status=confirmed`,
+        redirect_url: buildRedirectUrl(result.payment.successUrl, result.payment.id, 'confirmed'),
       },
       200
     );
   }
 
-  // bKash or Nagad: Allocate active wallet
-  const wallet = await assignWalletForPayment(
-    db,
-    merchant.id,
-    method,
-    payment.amount,
-    merchant.rotationStrategy as 'balanced' | 'fill_first'
-  );
-
-  if (!wallet) {
-    return c.json(
-      {
-        error: {
-          code: 'no_wallet_available',
-          message: `No active ${method} wallet has sufficient daily limit capacity for ৳${payment.amount}`,
-        },
-      },
-      400
-    );
-  }
-
-  await db
-    .update(payments)
-    .set({
-      method,
-      walletId: wallet.id,
-      updatedAt: now,
-    })
-    .where(eq(payments.id, payment.id));
-
   return c.json(
     {
-      id: payment.id,
-      method,
-      status: payment.status,
-      assigned_wallet: {
-        id: wallet.id,
-        provider: wallet.provider,
-        number: wallet.number,
-        label: wallet.label,
-      },
+      id: result.payment.id,
+      method: result.payment.method,
+      status: result.payment.status,
+      assigned_wallet: result.wallet
+        ? {
+            id: result.wallet.id,
+            provider: result.wallet.provider,
+            number: result.wallet.number,
+            label: result.wallet.label,
+          }
+        : null,
     },
     200
   );
@@ -415,273 +313,66 @@ checkoutRouter.post('/:id/submit', async (c) => {
     );
   }
 
-  // Terminal state checks
-  if (payment.status === 'PAID') {
-    return c.json(
-      {
-        error: {
-          code: 'invalid_state',
-          message: 'This payment has already been approved and verified',
-        },
-      },
-      400
-    );
-  }
-
-  if (payment.status === 'CANCELLED') {
-    return c.json(
-      {
-        error: {
-          code: 'invalid_state',
-          message: 'This payment session has been cancelled',
-        },
-      },
-      400
-    );
-  }
-
-  if (payment.status === 'SUBMITTED') {
-    return c.json(
-      {
-        error: {
-          code: 'invalid_state',
-          message: 'Payment details have already been submitted and are pending verification',
-        },
-      },
-      400
-    );
-  }
-
-  if (payment.status !== 'CREATED' && payment.status !== 'REJECTED') {
-    return c.json(
-      {
-        error: {
-          code: 'invalid_state',
-          message: `Cannot submit payment details in ${payment.status} status`,
-        },
-      },
-      400
-    );
-  }
-
-  // Attempt limit check (max 3 submissions)
-  if (payment.attempts >= 3) {
-    return c.json(
-      {
-        error: {
-          code: 'too_many_attempts',
-          message: 'Maximum submission attempts (3) exceeded for this payment session',
-        },
-      },
-      400
-    );
-  }
-
-  // Expiration check and late submission allowance
-  const now = Math.floor(Date.now() / 1000);
-  const lateSubmitHours = parseInt(c.env.LATE_SUBMIT_HOURS || '24', 10);
-  let isLate = 0;
-
-  if (now > payment.expiresAt) {
-    if (now > payment.expiresAt + lateSubmitHours * 3600) {
-      return c.json(
-        {
-          error: {
-            code: 'payment_expired',
-            message: 'This payment session has expired and is outside the 24-hour late submission window',
-          },
-        },
-        400
-      );
-    }
-    isLate = 1;
-  }
-
-  // Payment method must be bKash or Nagad
-  if (!payment.method || (payment.method !== 'bkash' && payment.method !== 'nagad')) {
-    return c.json(
-      {
-        error: {
-          code: 'invalid_state',
-          message: 'Please select a valid mobile payment method (bKash or Nagad) before submitting',
-        },
-      },
-      400
-    );
-  }
-
-  // Validate optional sender number if provided (11-digit Bangladeshi mobile number)
-  let senderNumber: string | null = null;
-  if (
-    body.sender_number !== undefined &&
-    body.sender_number !== null &&
-    String(body.sender_number).trim() !== ''
-  ) {
-    const rawNumber = String(body.sender_number).trim();
-    if (!/^01[3-9]\d{8}$/.test(rawNumber)) {
-      return c.json(
-        {
-          error: {
-            code: 'invalid_request',
-            message: 'Sender number must be a valid 11-digit Bangladeshi mobile number (013-019)',
-            param: 'sender_number',
-          },
-        },
-        400
-      );
-    }
-    senderNumber = rawNumber;
-  }
-
-  // Normalize and validate TrxID / TxnID
-  const trxLabel = payment.method === 'bkash' ? 'TrxID' : 'TxnID';
-  const trxId = body.trx_id ? String(body.trx_id).replace(/\s+/g, '').toUpperCase() : '';
-  if (!trxId || !/^[A-Z0-9]{6,30}$/.test(trxId)) {
-    return c.json(
-      {
-        error: {
-          code: 'trx_id_invalid_format',
-          message: `Invalid ${trxLabel} format. Must be 6-30 alphanumeric characters.`,
-          param: 'trx_id',
-        },
-      },
-      400
-    );
-  }
-
-  // TrxID burning check in live mode
-  if (payment.mode === 'live') {
-    const existingSubmission = await db
-      .select()
-      .from(trxSubmissions)
-      .where(
-        and(
-          eq(trxSubmissions.method, payment.method),
-          eq(trxSubmissions.trxId, trxId),
-          eq(trxSubmissions.mode, 'live')
-        )
-      )
-      .get();
-
-    if (existingSubmission) {
-      return c.json(
-        {
-          error: {
-            code: 'trx_id_already_used',
-            message: `This ${trxLabel} has already been submitted for another payment and cannot be reused`,
-            param: 'trx_id',
-          },
-        },
-        400
-      );
-    }
-  }
-
-  const merchant = await db
+  const store = await db
     .select()
-    .from(merchants)
-    .where(eq(merchants.id, payment.merchantId))
+    .from(stores)
+    .where(eq(stores.id, payment.storeId))
     .get();
 
-  if (!merchant) {
+  if (!store) {
     return c.json(
       {
         error: {
           code: 'invalid_request',
-          message: 'Merchant record not found',
+          message: 'Store record not found',
         },
       },
       404
     );
   }
 
-  // 1. Burn TrxID in trx_submissions table
-  await db.insert(trxSubmissions).values({
-    paymentId: payment.id,
-    method: payment.method,
-    trxId,
-    senderNumber,
-    outcome: 'pending',
-    mode: payment.mode,
-    createdAt: now,
-  });
-
-  // 2. Atomically transition payment to SUBMITTED
-  const newAttempts = payment.attempts + 1;
-  await db
-    .update(payments)
-    .set({
-      status: 'SUBMITTED',
-      trxId,
-      senderNumber,
-      attempts: newAttempts,
-      lateSubmission: isLate,
-      pendingDecision: null,
-      decisionEffectiveAt: null,
-      updatedAt: now,
-    })
-    .where(eq(payments.id, payment.id));
-
-  // 3. Record audit trail entry
-  await db.insert(paymentEvents).values({
-    paymentId: payment.id,
-    fromStatus: payment.status,
-    toStatus: 'SUBMITTED',
-    actor: 'customer',
-    note: isLate ? `Submitted ${trxLabel} (late submission)` : `Submitted ${trxLabel}`,
-    createdAt: now,
-  });
-
-  const updatedPayment: Payment = {
-    ...payment,
-    status: 'SUBMITTED',
-    trxId,
-    senderNumber,
-    attempts: newAttempts,
-    lateSubmission: isLate,
-    pendingDecision: null,
-    decisionEffectiveAt: null,
-    updatedAt: now,
-  };
-
-  // 4. Dispatch notification card to Telegram bot
-  if (c.env.TELEGRAM_BOT_TOKEN) {
-    try {
-      const bot = createBot(c.env, db);
-      const wallet = payment.walletId
-        ? await db.select().from(merchantWallets).where(eq(merchantWallets.id, payment.walletId)).get()
-        : null;
-
-      const messageId = await sendPaymentSubmissionNotification(bot, merchant, updatedPayment, wallet);
-      if (messageId) {
-        let existingMeta: Record<string, any> = {};
-        if (payment.metadata) {
-          try {
-            existingMeta = JSON.parse(payment.metadata);
-          } catch {}
-        }
-        existingMeta.telegram_message_id = messageId;
-        await db
-          .update(payments)
-          .set({ metadata: JSON.stringify(existingMeta) })
-          .where(eq(payments.id, payment.id));
-      }
-    } catch (err) {
-      console.error('[Checkout] Telegram notification dispatch failed:', err);
-    }
+  if (store.paused === 1) {
+    return c.json(
+      {
+        error: {
+          code: 'store_paused',
+          message: 'This store is currently paused. Please contact seller.',
+        },
+      },
+      403
+    );
   }
 
-  const redirectUrl = `${payment.successUrl}${
-    payment.successUrl.includes('?') ? '&' : '?'
-  }payment_id=${payment.id}&status=submitted`;
+  const result = await submitPaymentTrx({
+    db,
+    env: c.env,
+    payment,
+    store,
+    trxId: body.trx_id,
+    senderNumber: body.sender_number,
+    actor: 'customer',
+  });
+
+  if (!result.ok) {
+    return c.json(
+      {
+        error: {
+          code: result.code,
+          message: result.message,
+          ...(result.param ? { param: result.param } : {}),
+        },
+      },
+      result.status
+    );
+  }
 
   return c.json(
     {
       status: 'SUBMITTED',
       message: 'Thank you! We received your payment details. The seller will verify them shortly.',
-      payment_id: payment.id,
-      redirect_url: redirectUrl,
-      attempts_remaining: Math.max(0, 3 - newAttempts),
+      payment_id: result.payment.id,
+      redirect_url: buildRedirectUrl(result.payment.successUrl, result.payment.id, 'submitted'),
+      attempts_remaining: Math.max(0, 3 - result.payment.attempts),
     },
     200
   );

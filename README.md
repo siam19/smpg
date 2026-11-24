@@ -1,6 +1,6 @@
 # SMPG (Send Money Payment Gateway)
 
-Accept **bKash Personal Send Money**, **Nagad Personal Send Money**, and **Cash on Delivery (COD)** on any e-commerce storefront with **0% transaction fees** and **no corporate trade license required**.
+Self-hosted, single-owner, multi-store payment gateway for **bKash Personal Send Money**, **Nagad Personal Send Money**, and **Cash on Delivery (COD)** on any e-commerce storefront — with **0% transaction fees**, **no corporate trade license required**, and **free Cloudflare Workers + D1 hosting (no credit card required)**.
 
 [![NPM Version](https://img.shields.io/npm/v/send-money-payment-gateway?color=blue)](https://www.npmjs.com/package/send-money-payment-gateway)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -11,9 +11,31 @@ Accept **bKash Personal Send Money**, **Nagad Personal Send Money**, and **Cash 
 
 ## Quick Start
 
-### 1. Install the SDK
+### 1. Self-Host SMPG Core (1 Command)
 
-Install the official client library for your storefront or backend project:
+Deploy your own private SMPG Worker + D1 database and connect your own Telegram bot:
+
+```bash
+git clone https://github.com/siam19/smpg.git
+cd smpg
+bun install
+bun run setup
+```
+
+The interactive setup CLI walks you through:
+1. Checking Cloudflare Wrangler login (`bunx wrangler login`).
+2. Creating a private Telegram bot via `@BotFather` and validating the token.
+3. Locking the bot to your Telegram account (`OWNER_TELEGRAM_ID` or a one-time `/start <SETUP_TOKEN>` claim link).
+4. Provisioning a D1 database, writing `apps/core/wrangler.toml`, and applying migrations.
+5. Generating `ENCRYPTION_KEY` and `TELEGRAM_WEBHOOK_SECRET` and uploading all Worker secrets.
+6. Deploying `apps/core` and registering your Telegram webhook automatically.
+
+Once deployed, open your private Telegram bot link:
+- Create one or more stores (`/stores`) — each store gets its own `smpg_live_...` / `smpg_test_...` API keys and webhook secret.
+- Add your personal bKash and Nagad numbers (`/wallets`) — shared across all stores by default (or scoped to a single store) with automatic daily ৳25,000 SIM cap rotation.
+- Configure each store's webhook URL (e.g. `https://mystore.com/api/webhooks/smpg`).
+
+### 2. Install the SDK in Your Storefront
 
 ```bash
 # npm
@@ -26,9 +48,9 @@ bun add send-money-payment-gateway
 pnpm add send-money-payment-gateway
 ```
 
-### 2. Install the AI Coding Agent Skill
+### 3. Install the AI Coding Agent Skill
 
-When building with AI coding assistants (such as Cursor, Claude Code, Antigravity, or Codex), install the integration skill to give agents full integration guidelines, validation rules, and multi-framework templates:
+When building with AI coding assistants (Cursor, Claude Code, Antigravity, Codex), install the integration skill for full guidelines, validation rules, and multi-framework templates:
 
 ```bash
 npx skills add siam19/smpg --skill smpg-integration
@@ -36,53 +58,42 @@ npx skills add siam19/smpg --skill smpg-integration
 
 ---
 
-## Merchant Setup & API Keys
-
-SMPG does not require commercial trade licenses, physical bank accounts, or approval waiting periods. All merchant onboarding, personal wallet configuration, and payment verification are managed through Telegram:
-
-**Telegram Bot**: [t.me/spmg_payments_bot](https://t.me/spmg_payments_bot)
-
-1. **Sign Up**: Open [t.me/spmg_payments_bot](https://t.me/spmg_payments_bot) and send `/start`.
-2. **Configure Store**: Provide your Store Name, Support Contact, and optional Brand Color.
-3. **Add Personal Wallets**: Add your bKash and Nagad personal mobile numbers. SMPG automatically rotates between them to balance volume and stay below Bangladesh Bank daily regulatory limits (BDT 25,000/day per SIM).
-4. **Retrieve API Keys**: Send `/keys` to receive your API secret key (`smpg_live_...` or `smpg_test_...`) and webhook signing secret.
-5. **Set Webhook URL**: Set your storefront's webhook endpoint URL (e.g., `https://mystore.com/api/webhooks/smpg`).
-
----
-
 ## How SMPG Works
+
+SMPG is designed for **embedded custom checkout UIs** inside your own storefront — no separate checkout worker or external redirect required.
 
 ```text
 +----------+              +------------+             +-----------+          +-------------------+
-| Customer |              | Storefront |             | SMPG Core |          | Merchant Telegram |
+| Customer |              | Storefront |             | SMPG Core |          |  Owner Telegram   |
 +----+-----+              +-----+------+             +-----+-----+          +---------+---------+
      |                          |                          |                          |
      |--- 1. Place Order ------>|                          |                          |
      |    (total: BDT 1,850)    |--- 2. Create Payment --->|                          |
      |                          |    (POST /v1/payments)   |                          |
-     |                          |<-- Return Session URL ---|                          |
-     |<-- 3. Checkout Page -----|                          |                          |
+     |                          |<-- Return payment.id ----|                          |
+     |<-- 3. Embedded Box ------|                          |                          |
+     |    (pick bKash/Nagad/COD)|                          |                          |
      |                          |                          |                          |
      |--- 4. Send Money via App +------------------------->|                          |
-     |    and submit TrxID      |                          |--- 5. Payment Alert ---->|
-     |                          |                          |    with Approve/Reject   |
+     |    & submit TrxID        |   (via SMPGCheckout)     |--- 5. Payment Alert ---->|
+     |                          |                          |    [Store Name] + TrxID  |
      |                          |                          |                          |
      |                          |                          |<-- 6. Tap "Approve" -----|
      |                          |                          |    (or reply "ok")       |
      |                          |                          |    [90s Undo Window]     |
      |                          |                          |           |              |
      |                          |<-- 7. Signed Webhook ----|<----------+              |
-     |                          |    ("payment.paid")      |                          |
+     |                          |    (x-smpg-signature)    |                          |
      |                          |                          |                          |
      |<-- 8. Fulfill Order -----|                          |                          |
 ```
 
-### Key Workflow Principles:
-- **0% Cut**: Payments go directly from customer to your personal bKash/Nagad SIM.
-- **Dynamic SIM Rotation**: Outgoing payments are distributed across your configured personal numbers to prevent individual wallet threshold exhaustion.
-- **Telegram Verification**: When a customer submits a Transaction ID (TrxID), you receive a Telegram push notification. Check your mobile wallet statement and tap **Approve** or **Reject** (or reply directly `"ok"` / `"y"` to the notification).
-- **90-Second Undo Window**: Any accidental tap can be reversed within 90 seconds before the state finalizes and webhooks fire.
-- **Signed Webhook Fulfillment**: Your server only fulfills orders when a cryptographically signed HMAC-SHA256 webhook (`payment.paid` or `payment.confirmed`) arrives.
+### Key Principles
+- **Self-Hosted & Private**: You own the Worker, D1 database, and Telegram bot. Zero central servers, zero shared merchant data, zero R2 bucket requirement.
+- **Single-Owner, Multi-Store**: Manage multiple storefronts from one personal Telegram bot, with shared or store-scoped personal SIM wallets and clean plain-text notifications (no emojis).
+- **Dynamic SIM Rotation**: Outgoing payments are balanced across your personal bKash/Nagad numbers so each SIM stays below its daily ৳25,000 cap across all stores.
+- **90-Second Undo Window**: Any accidental Approve/Reject tap in Telegram can be undone within 90 seconds before the state finalizes and webhooks fire.
+- **Signed Webhook Fulfillment**: Your storefront only fulfills orders when a verified HMAC-SHA256 webhook (`x-smpg-signature`) arrives.
 
 ---
 
@@ -93,47 +104,50 @@ SMPG does not require commercial trade licenses, physical bank accounts, or appr
 import { SMPG } from 'send-money-payment-gateway';
 
 const smpg = new SMPG(process.env.SMPG_SECRET_KEY!, {
-  baseUrl: process.env.SMPG_CORE_URL!, // e.g. https://smpg-core.your-domain.workers.dev
+  baseUrl: process.env.SMPG_CORE_URL!, // Your deployed Worker URL, e.g. https://smpg-core.<subdomain>.workers.dev
   webhookSecret: process.env.SMPG_WEBHOOK_SECRET,
 });
 
 // 1. Create order in your database first with PENDING_PAYMENT status
 const order = await db.orders.create({ total: 1850, status: 'PENDING_PAYMENT' });
 
-// 2. Create SMPG session passing your local order ID
-const payment = await smpg.payments.create({
-  amount: order.total,
-  external_order_id: order.id,
-  customer: { name: 'Customer Name', phone: '017XXXXXXXX' },
-  success_url: `https://yourstore.com/orders/${order.id}/thanks`,
-  cancel_url: `https://yourstore.com/cart`,
-});
+// 2. Create SMPG payment session passing your local order ID
+const payment = await smpg.payments.create(
+  {
+    amount: order.total,
+    external_order_id: order.id,
+    customer: { name: 'Customer Name', phone: '017XXXXXXXX' },
+  },
+  { idempotencyKey: order.id }
+);
 
-// Redirect customer to hosted checkout:
-console.log(payment.checkout_url);
+// Return payment.id to your storefront's embedded checkout UI
+return { orderId: order.id, paymentId: payment.id };
 ```
 
 ### 2. Client-Side: Embedded Custom Checkout Box
-If you prefer keeping customers on your site without redirecting, use `SMPGCheckout` (safe for browser; no secret key required):
+Use `SMPGCheckout` directly in your storefront frontend (browser-safe, requires no secret API key):
 
 ```typescript
 import { SMPGCheckout } from 'send-money-payment-gateway';
 
-const checkout = new SMPGCheckout(payment.id, {
-  baseUrl: 'https://smpg-core.your-domain.workers.dev',
+const checkout = new SMPGCheckout({
+  baseUrl: process.env.NEXT_PUBLIC_SMPG_CORE_URL!, // Required: your deployed Worker URL
 });
 
-// 1. Get session details (amount, available methods, store branding)
-const session = await checkout.getSession();
+// 1. Get session details (amount, available methods, store name)
+const session = await checkout.getSession(paymentId);
 
-// 2. Customer selects method (e.g. bkash)
-const { wallet } = await checkout.selectMethod('bkash');
-console.log(`Send BDT ${session.amount} to ${wallet.number} (${wallet.type})`);
+// 2. Customer selects a method ('bkash' | 'nagad' | 'cod')
+const { assigned_wallet } = await checkout.selectMethod(paymentId, 'bkash');
+console.log(`Send BDT ${session.amount} to ${assigned_wallet.number}`);
 
 // 3. Customer submits TrxID
-const result = await checkout.submit({ trx_id: '9A8B7C6D5E' });
+const result = await checkout.submit(paymentId, { trx_id: '9A8B7C6D5E' });
 console.log(result.status); // "SUBMITTED"
 ```
+
+See [examples/react](examples/react) for a ready-to-use React/Next.js checkout component and [examples/storefront](examples/storefront) for a complete Hono storefront with embedded checkout and webhook handling.
 
 ### 3. Server-Side: Webhook Verification (Next.js / Node)
 ```typescript
@@ -142,7 +156,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { smpg } from '@/lib/smpg';
 
 export async function POST(req: NextRequest) {
-  const signature = req.headers.get('smpg-signature');
+  const signature = req.headers.get('x-smpg-signature');
   const rawBody = await req.text(); // Raw unparsed body required for HMAC
 
   try {
@@ -155,8 +169,14 @@ export async function POST(req: NextRequest) {
       // Confirmed Cash on Delivery: ship order
       await shipOrder(event.data.external_order_id);
     } else if (event.type === 'payment.rejected') {
-      // Rejected TrxID: send retry_url to customer
-      await notifyCustomerRetry(event.data.external_order_id, event.data.retry_url);
+      // Rejected TrxID: notify customer to retry on your order page
+      await notifyCustomerRetry(
+        event.data.external_order_id,
+        `https://yourstore.com/orders/${event.data.external_order_id}`
+      );
+    } else if (event.type === 'payment.reopened') {
+      // Merchant reopened a rejected payment: move back to awaiting verification
+      await markOrderAwaitingVerification(event.data.external_order_id);
     }
 
     return NextResponse.json({ received: true });
@@ -173,15 +193,17 @@ export async function POST(req: NextRequest) {
 ```text
 smpg/
 ├── apps/
-│   ├── core/           # Cloudflare Worker (REST API, SQLite D1, Telegram Bot, Cron)
-│   └── checkout/       # SvelteKit + Tailwind CSS hosted checkout web application
+│   └── core/           # Cloudflare Worker (REST API, D1 SQLite, Telegram Bot, Cron)
 ├── packages/
 │   └── sdk/            # send-money-payment-gateway NPM package (ESM + CJS + Types)
 ├── examples/
-│   └── storefront/     # Reference storefront (Hono + Webhook verification + Tests)
+│   ├── storefront/     # Reference Hono storefront (embedded checkout + webhooks + tests)
+│   └── react/          # Drop-in React/Next.js embedded checkout component
+├── scripts/
+│   └── setup.ts        # 1-command interactive self-hosted setup & deploy CLI
 ├── skills/
 │   └── smpg-integration/ # AI coding agent skill (SKILL.md)
-└── docs/               # OpenAPI specification, LLM context, and sprint logs
+└── docs/               # OpenAPI 3.1 spec, llms.txt, architecture plan, and sprint logs
 ```
 
 ---
@@ -189,8 +211,8 @@ smpg/
 ## Local Development
 
 ### Prerequisites
-* [Bun](https://bun.sh) (v1.2+)
-* [Cloudflare Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/)
+- [Bun](https://bun.sh) (v1.2+)
+- [Cloudflare Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/)
 
 ```bash
 # 1. Install dependencies

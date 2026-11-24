@@ -2,8 +2,8 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { webhookCallback } from 'grammy';
 import { createDb } from './db';
-import { createBot } from './bot';
 import { finalizeDueDecisions } from './services/decision';
+import { expireStalePayments } from './services/payment';
 import { processPendingWebhookDeliveries } from './services/webhook';
 import { authMiddleware, type ApiVariables } from './api/auth';
 import { paymentsRouter } from './api/payments';
@@ -19,7 +19,7 @@ app.get('/health', (c) => {
   return c.json({
     status: 'ok',
     service: 'smpg-core',
-    version: '0.1.0',
+    version: '0.2.0',
     timestamp: new Date().toISOString(),
   });
 });
@@ -46,6 +46,7 @@ app.post('/v1/telegram-webhook', async (c) => {
   }
 
   const db = createDb(c.env.DB);
+  const { createBot } = await import('./bot');
   const bot = createBot(c.env, db);
 
   return webhookCallback(bot, 'hono')(c);
@@ -55,20 +56,28 @@ export { app };
 
 export default {
   fetch: app.fetch,
-  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(
       (async () => {
         try {
           const db = createDb(env.DB);
-          const bot = env.TELEGRAM_BOT_TOKEN ? createBot(env, db) : undefined;
+          const bot = env.TELEGRAM_BOT_TOKEN
+            ? (await import('./bot')).createBot(env, db)
+            : undefined;
 
-          // 1. Finalize decisions whose 90s undo window has passed
-          const finalized = await finalizeDueDecisions(db, bot);
+          // 1. Expire stale CREATED payments to release reserved wallet capacity
+          const expired = await expireStalePayments(db);
+          if (expired > 0) {
+            console.log(`[Cron] Expired ${expired} stale payments`);
+          }
+
+          // 2. Finalize decisions whose 90s undo window has passed
+          const finalized = await finalizeDueDecisions(db, bot, env);
           if (finalized > 0) {
             console.log(`[Cron] Finalized ${finalized} due decisions`);
           }
 
-          // 2. Process pending outbound webhook deliveries with retries
+          // 3. Process pending outbound webhook deliveries with retries
           const webhookResults = await processPendingWebhookDeliveries(db, env, bot);
           if (webhookResults.processed > 0) {
             console.log(

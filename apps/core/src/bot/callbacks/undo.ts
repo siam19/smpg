@@ -1,12 +1,13 @@
 import { and, eq, isNotNull } from 'drizzle-orm';
 import type { BotContext } from '../context';
-import { merchantWallets, payments } from '../../db/schema';
+import { payments, stores, wallets } from '../../db/schema';
+import { ACCESS_DENIED_MESSAGE } from '../middleware/auth';
 import { formatCodCard, formatSubmittedCard } from '../views/cards';
 import { createCodActionKeyboard, createPaymentActionKeyboard } from '../views/keyboards';
 
 export async function handleUndoCallback(ctx: BotContext, paymentId: string) {
-  if (!ctx.merchant) {
-    await ctx.answerCallbackQuery({ text: 'Unauthorized', show_alert: true });
+  if (!ctx.isOwner) {
+    await ctx.answerCallbackQuery({ text: ACCESS_DENIED_MESSAGE, show_alert: true });
     return;
   }
 
@@ -21,13 +22,7 @@ export async function handleUndoCallback(ctx: BotContext, paymentId: string) {
       decisionEffectiveAt: null,
       updatedAt: now,
     })
-    .where(
-      and(
-        eq(payments.id, paymentId),
-        eq(payments.merchantId, ctx.merchant.id),
-        isNotNull(payments.pendingDecision)
-      )
-    )
+    .where(and(eq(payments.id, paymentId), isNotNull(payments.pendingDecision)))
     .returning();
 
   if (result.length === 0) {
@@ -44,24 +39,30 @@ export async function handleUndoCallback(ctx: BotContext, paymentId: string) {
     text: 'Decision cancelled. Reverted to previous state.',
   });
 
-  // Restore original card with initial buttons
+  const store = await ctx.db
+    .select()
+    .from(stores)
+    .where(eq(stores.id, payment.storeId))
+    .get();
+  const storeName = store?.name || 'Store';
+
   let restoredText = '';
   let keyboard;
 
   if (payment.method === 'cod') {
-    restoredText = formatCodCard(payment);
+    restoredText = formatCodCard(payment, storeName);
     keyboard = createCodActionKeyboard(payment.id);
   } else {
     let wallet = null;
     if (payment.walletId) {
       const [w] = await ctx.db
         .select()
-        .from(merchantWallets)
-        .where(eq(merchantWallets.id, payment.walletId))
+        .from(wallets)
+        .where(eq(wallets.id, payment.walletId))
         .limit(1);
       wallet = w ?? null;
     }
-    restoredText = formatSubmittedCard(payment, wallet);
+    restoredText = formatSubmittedCard(payment, wallet, storeName);
     keyboard = createPaymentActionKeyboard(payment.id);
   }
 

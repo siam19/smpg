@@ -2,16 +2,22 @@ import { describe, expect, test, beforeEach } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { app } from '../src/index';
 import { createTestD1 } from './helpers/mock-d1';
-import { merchants, merchantWallets, payments, trxSubmissions } from '../src/db/schema';
+import {
+  botConfig,
+  payments,
+  stores,
+  trxSubmissions,
+  wallets,
+  webhookDeliveries,
+} from '../src/db/schema';
 import type { Env } from '../src/types';
 
-describe('Sprint 3: Customer Checkout Endpoints', () => {
+describe('Customer Checkout Endpoints (/c/:id/*)', () => {
   let d1: D1Database;
   let db: any;
   let env: Env;
 
-  const testMerchantId = 'mrc_checkout_store';
-  const testChatId = 88776655;
+  const testStoreId = 'str_checkout_store';
 
   beforeEach(async () => {
     const testSetup = createTestD1();
@@ -20,11 +26,10 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
 
     env = {
       DB: d1,
-      BUCKET: {} as any,
       TELEGRAM_BOT_TOKEN: '', // Empty in tests to prevent real HTTP calls to Telegram API
       TELEGRAM_WEBHOOK_SECRET: 'mock_secret',
       ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-      PUBLIC_BASE_URL: 'https://smpg-core.workers.dev',
+      OWNER_TELEGRAM_ID: '88776655',
       UNDO_WINDOW_SECONDS: '90',
       SUBMITTED_TTL_HOURS: '72',
       CREATED_TTL_MINUTES: '60',
@@ -33,26 +38,30 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
 
     const now = Math.floor(Date.now() / 1000);
 
-    // Seed merchant
-    await db.insert(merchants).values({
-      id: testMerchantId,
-      telegramChatId: testChatId,
-      storeName: 'Aesthetic Fashion',
-      brandColor: '#E11D48',
-      codEnabled: 1,
+    await db.insert(botConfig).values({
+      id: 'default',
+      ownerTelegramChatId: 88776655,
       rotationStrategy: 'balanced',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Seed store
+    await db.insert(stores).values({
+      id: testStoreId,
+      name: 'Aesthetic Fashion',
+      codEnabled: 1,
       webhookUrl: 'https://store.example/api/webhook',
       webhookSecret: 'mock_secret_enc',
-      testMode: 1,
       paused: 0,
       createdAt: now,
     });
 
-    // Seed wallets
-    await db.insert(merchantWallets).values([
+    // Seed shared wallets
+    await db.insert(wallets).values([
       {
         id: 'wal_bkash_main',
-        merchantId: testMerchantId,
+        storeId: null,
         provider: 'bkash',
         number: '01711002233',
         label: 'Main bKash',
@@ -63,7 +72,7 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       },
       {
         id: 'wal_nagad_main',
-        merchantId: testMerchantId,
+        storeId: null,
         provider: 'nagad',
         number: '01811002233',
         label: 'Main Nagad',
@@ -76,11 +85,11 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
   });
 
   describe('GET /c/:id/data', () => {
-    test('returns public checkout session data with store branding and available methods', async () => {
+    test('returns public checkout session data with store id/name and available methods (no brand_color/logo_key)', async () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_checkout_1',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 1500,
         status: 'CREATED',
@@ -101,8 +110,9 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       expect(data.amount).toBe(1500);
       expect(data.currency).toBe('BDT');
       expect(data.status).toBe('CREATED');
-      expect(data.store.name).toBe('Aesthetic Fashion');
-      expect(data.store.brand_color).toBe('#E11D48');
+      expect(data.store).toEqual({ id: testStoreId, name: 'Aesthetic Fashion' });
+      expect(data.store.brand_color).toBeUndefined();
+      expect(data.store.logo_key).toBeUndefined();
       expect(data.available_methods).toContain('cod');
       expect(data.available_methods).toContain('bkash');
       expect(data.available_methods).toContain('nagad');
@@ -119,37 +129,34 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       expect(data.error.code).toBe('invalid_request');
     });
 
-    test('returns 403 if merchant account is paused', async () => {
-      await db.update(merchants).set({ paused: 1 });
+    test('returns 403 if store is paused', async () => {
+      await db.update(stores).set({ paused: 1 });
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
-        id: 'pay_paused_mrc',
-        merchantId: testMerchantId,
+        id: 'pay_paused_str',
+        storeId: testStoreId,
         mode: 'live',
         amount: 1000,
         status: 'CREATED',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now,
         updatedAt: now,
       });
 
-      const res = await app.request('/c/pay_paused_mrc/data', { method: 'GET' }, env as any);
+      const res = await app.request('/c/pay_paused_str/data', { method: 'GET' }, env as any);
       expect(res.status).toBe(403);
       const data = await res.json();
-      expect(data.error.code).toBe('merchant_paused');
+      expect(data.error.code).toBe('store_paused');
     });
 
     test('flags can_late_submit if payment expired within 24h grace window', async () => {
       const now = Math.floor(Date.now() / 1000);
-      // Expired 2 hours ago
       await db.insert(payments).values({
         id: 'pay_expired_recent',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 1000,
         status: 'EXPIRED',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now - 7200,
         createdAt: now - 10800,
         updatedAt: now - 7200,
@@ -168,13 +175,12 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_choose_bkash',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 1200,
         status: 'CREATED',
         method: null,
         walletId: null,
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now,
         updatedAt: now,
@@ -197,18 +203,22 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       expect(data.assigned_wallet.provider).toBe('bkash');
       expect(data.assigned_wallet.number).toBe('01711002233');
 
-      // Check DB
-      const updated = await db.select().from(payments).where(eq(payments.id, 'pay_choose_bkash')).get();
+      const updated = await db
+        .select()
+        .from(payments)
+        .where(eq(payments.id, 'pay_choose_bkash'))
+        .get();
       expect(updated.method).toBe('bkash');
       expect(updated.walletId).toBe('wal_bkash_main');
     });
 
-    test('transitions to CONFIRMED when customer selects COD', async () => {
+    test('transitions to CONFIRMED and queues payment.confirmed webhook when customer selects COD', async () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_choose_cod',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
+        externalOrderId: 'ORD-COD-CHK',
         amount: 1500,
         status: 'CREATED',
         method: null,
@@ -237,21 +247,33 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       expect(data.method).toBe('cod');
       expect(data.redirect_url).toContain('status=confirmed');
 
-      const updated = await db.select().from(payments).where(eq(payments.id, 'pay_choose_cod')).get();
+      const updated = await db
+        .select()
+        .from(payments)
+        .where(eq(payments.id, 'pay_choose_cod'))
+        .get();
       expect(updated.status).toBe('CONFIRMED');
+
+      // Verify payment.confirmed webhook was queued with snake_case payload
+      const deliveries = await db.select().from(webhookDeliveries);
+      expect(deliveries.length).toBe(1);
+      expect(deliveries[0].eventType).toBe('payment.confirmed');
+      expect(deliveries[0].storeId).toBe(testStoreId);
+      const payload = JSON.parse(deliveries[0].payload);
+      expect(payload.data.external_order_id).toBe('ORD-COD-CHK');
+      expect(payload.data.status).toBe('CONFIRMED');
     });
 
     test('rejects method change when payment is not in CREATED state', async () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_already_submitted',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 1500,
         status: 'SUBMITTED',
         method: 'bkash',
         walletId: 'wal_bkash_main',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now,
         updatedAt: now,
@@ -278,7 +300,7 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_to_submit_1',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 1800,
         status: 'CREATED',
@@ -311,14 +333,16 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       expect(data.redirect_url).toContain('status=submitted');
       expect(data.attempts_remaining).toBe(2);
 
-      // Verify DB updates
-      const updated = await db.select().from(payments).where(eq(payments.id, 'pay_to_submit_1')).get();
+      const updated = await db
+        .select()
+        .from(payments)
+        .where(eq(payments.id, 'pay_to_submit_1'))
+        .get();
       expect(updated.status).toBe('SUBMITTED');
-      expect(updated.trxId).toBe('BK123ABC456'); // Normalized to uppercase
+      expect(updated.trxId).toBe('BK123ABC456');
       expect(updated.senderNumber).toBe('01712345678');
       expect(updated.attempts).toBe(1);
 
-      // Verify TrxID burned in trx_submissions
       const burned = await db
         .select()
         .from(trxSubmissions)
@@ -328,19 +352,19 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       expect(burned.method).toBe('bkash');
     });
 
-    test('submits TrxID without sender_number (TrxID-only submission)', async () => {
+    test('submits TrxID without sender_number and without success_url (redirect_url is null)', async () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_trx_only_submit',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 850,
         status: 'CREATED',
         method: 'bkash',
         walletId: 'wal_bkash_main',
         expiresAt: now + 3600,
-        successUrl: 'https://store.example/success',
-        cancelUrl: 'https://store.example/cancel',
+        successUrl: null,
+        cancelUrl: null,
         createdAt: now,
         updatedAt: now,
       });
@@ -361,6 +385,7 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       const data = await res.json();
       expect(data.status).toBe('SUBMITTED');
       expect(data.payment_id).toBe('pay_trx_only_submit');
+      expect(data.redirect_url).toBeNull();
 
       const updated = await db
         .select()
@@ -376,13 +401,12 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_bot_target',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 1000,
         status: 'CREATED',
         method: 'bkash',
         walletId: 'wal_bkash_main',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now,
         updatedAt: now,
@@ -410,16 +434,14 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
     test('rejects reused TrxID in live mode (TrxID burning)', async () => {
       const now = Math.floor(Date.now() / 1000);
 
-      // Pre-seed previous payment and pre-burn a TrxID in trx_submissions
       await db.insert(payments).values({
         id: 'pay_previous_session',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 500,
         status: 'PAID',
         method: 'bkash',
         walletId: 'wal_bkash_main',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now - 2000,
         updatedAt: now - 1000,
@@ -437,13 +459,12 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
 
       await db.insert(payments).values({
         id: 'pay_dup_trx_test',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 1000,
         status: 'CREATED',
         method: 'bkash',
         walletId: 'wal_bkash_main',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now,
         updatedAt: now,
@@ -456,7 +477,7 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sender_number: '01712345678',
-            trx_id: 'alreadyused123', // Lowercase, tests normalization
+            trx_id: 'alreadyused123',
           }),
         },
         env as any
@@ -471,13 +492,12 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_invalid_phone_test',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 1000,
         status: 'CREATED',
         method: 'bkash',
         walletId: 'wal_bkash_main',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now,
         updatedAt: now,
@@ -489,7 +509,7 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            sender_number: '01234567890', // 012 is invalid BD prefix
+            sender_number: '01234567890',
             trx_id: 'VALIDTRX99',
           }),
         },
@@ -504,16 +524,14 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
 
     test('accepts late submission past 60 min and flags late_submission', async () => {
       const now = Math.floor(Date.now() / 1000);
-      // Expired 30 minutes ago, but within 24h grace window
       await db.insert(payments).values({
         id: 'pay_late_submit_target',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 1000,
-        status: 'CREATED',
+        status: 'EXPIRED',
         method: 'nagad',
         walletId: 'wal_nagad_main',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now - 1800,
         createdAt: now - 5400,
         updatedAt: now - 1800,
@@ -536,7 +554,11 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       const data = await res.json();
       expect(data.status).toBe('SUBMITTED');
 
-      const updated = await db.select().from(payments).where(eq(payments.id, 'pay_late_submit_target')).get();
+      const updated = await db
+        .select()
+        .from(payments)
+        .where(eq(payments.id, 'pay_late_submit_target'))
+        .get();
       expect(updated.status).toBe('SUBMITTED');
       expect(updated.lateSubmission).toBe(1);
     });
@@ -545,14 +567,13 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_max_attempts',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 1000,
         status: 'REJECTED',
         method: 'bkash',
         walletId: 'wal_bkash_main',
         attempts: 3,
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now,
         updatedAt: now,
@@ -582,13 +603,12 @@ describe('Sprint 3: Customer Checkout Endpoints', () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_status_fast',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 2500,
         status: 'SUBMITTED',
         method: 'bkash',
         walletId: 'wal_bkash_main',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now,
         updatedAt: now,

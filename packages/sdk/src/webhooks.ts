@@ -1,4 +1,4 @@
-import type { WebhookEvent } from './types';
+import type { Payment, WebhookEvent } from './types';
 
 export class WebhookVerificationError extends Error {
   constructor(message: string) {
@@ -47,10 +47,10 @@ export interface VerifySignatureOptions {
  *
  * @param rawBody - Raw unparsed HTTP request body string
  * @param signatureHeader - The `x-smpg-signature` header value (e.g. `t=1731330000,v1=abcdef...`)
- * @param secret - The merchant webhook secret
+ * @param secret - The store webhook secret
  * @param options - Optional verification parameters such as timestamp tolerance
  */
-export async function constructEvent<T = any>(
+export async function constructEvent<T = Payment>(
   rawBody: string,
   signatureHeader: string,
   secret: string,

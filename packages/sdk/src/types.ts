@@ -23,7 +23,7 @@ export interface AssignedWallet {
 
 export interface Payment {
   id: string;
-  merchant_id: string;
+  store_id: string;
   mode: 'test' | 'live';
   external_order_id?: string | null;
   method: PaymentMethod | null;
@@ -36,10 +36,11 @@ export interface Payment {
   sender_number?: string | null;
   customer_name?: string | null;
   customer_phone?: string | null;
-  success_url: string;
+  success_url?: string | null;
   cancel_url?: string | null;
-  checkout_url?: string;
   metadata?: Record<string, unknown> | null;
+  attempts?: number;
+  attempts_remaining?: number;
   pending_decision?: 'approve' | 'reject' | 'confirm' | 'cancel' | null;
   expires_at: string;
   created_at: string;
@@ -51,7 +52,7 @@ export interface CreatePaymentParams {
   method?: PaymentMethod;
   external_order_id?: string;
   customer?: CustomerInfo;
-  success_url: string;
+  success_url?: string;
   cancel_url?: string;
   metadata?: Record<string, unknown>;
 }
@@ -73,9 +74,8 @@ export interface ListPaymentsParams {
 }
 
 export interface CheckoutStoreInfo {
+  id: string;
   name: string;
-  brand_color: string;
-  logo_key: string | null;
 }
 
 export interface CheckoutSessionData {
@@ -95,7 +95,7 @@ export interface CheckoutSessionData {
   expires_at: string;
   is_expired: boolean;
   can_late_submit: boolean;
-  success_url: string;
+  success_url: string | null;
   cancel_url: string | null;
 }
 
@@ -103,8 +103,13 @@ export interface SubmitPaymentResult {
   status: PaymentStatus;
   message: string;
   payment_id: string;
-  redirect_url: string;
+  redirect_url?: string | null;
   attempts_remaining: number;
+}
+
+export interface SMPGCheckoutOptions {
+  baseUrl: string;
+  fetchFn?: typeof fetch;
 }
 
 export interface ClientCheckoutOptions {
@@ -122,7 +127,7 @@ export type WebhookEventType =
   | 'payment.expired'
   | 'payment.cancelled';
 
-export interface WebhookEvent<T = Payment & { retry_url?: string }> {
+export interface WebhookEvent<T = Payment> {
   id: string;
   type: WebhookEventType;
   created: number;

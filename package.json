@@ -8,6 +8,7 @@
     "examples/*"
   ],
   "scripts": {
+    "setup": "bun run scripts/setup.ts",
     "dev": "bun --filter @smpg/core dev",
     "build": "bun --filter '*' build",
     "typecheck": "bun run --filter '*' typecheck",

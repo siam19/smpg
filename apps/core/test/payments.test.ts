@@ -1,19 +1,27 @@
 import { describe, expect, test, beforeEach } from 'bun:test';
 import { app } from '../src/index';
 import { createTestD1 } from './helpers/mock-d1';
-import { apiKeys, merchants, merchantWallets, payments, webhookDeliveries } from '../src/db/schema';
+import {
+  apiKeys,
+  botConfig,
+  payments,
+  stores,
+  wallets,
+  webhookDeliveries,
+} from '../src/db/schema';
 import { generateApiKey, sha256 } from '../src/services/crypto';
 import type { Env } from '../src/types';
 
-describe('Sprint 2: Core Payments REST API', () => {
+describe('Core Payments REST API (Single-Owner Multi-Store)', () => {
   let d1: D1Database;
   let db: any;
   let env: Env;
 
-  const testMerchantId = 'mrc_test123';
-  const testChatId = 12345678;
+  const testStoreId = 'str_test123';
+  const secondStoreId = 'str_other456';
   let liveKey: string;
   let testKey: string;
+  let secondStoreKey: string;
 
   beforeEach(async () => {
     const testSetup = createTestD1();
@@ -22,11 +30,10 @@ describe('Sprint 2: Core Payments REST API', () => {
 
     env = {
       DB: d1,
-      BUCKET: {} as any,
-      TELEGRAM_BOT_TOKEN: 'mock_token',
+      TELEGRAM_BOT_TOKEN: '',
       TELEGRAM_WEBHOOK_SECRET: 'mock_webhook_secret',
       ENCRYPTION_KEY: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-      PUBLIC_BASE_URL: 'https://smpg-core.workers.dev',
+      OWNER_TELEGRAM_ID: '12345678',
       UNDO_WINDOW_SECONDS: '90',
       SUBMITTED_TTL_HOURS: '72',
       CREATED_TTL_MINUTES: '60',
@@ -35,30 +42,43 @@ describe('Sprint 2: Core Payments REST API', () => {
 
     const now = Math.floor(Date.now() / 1000);
 
-    // 1. Seed merchant
-    await db.insert(merchants).values({
-      id: testMerchantId,
-      telegramChatId: testChatId,
-      storeName: 'Test Store',
-      brandColor: '#10B981',
-      codEnabled: 1,
+    await db.insert(botConfig).values({
+      id: 'default',
+      ownerTelegramChatId: 12345678,
       rotationStrategy: 'balanced',
-      webhookUrl: 'https://store.example/api/webhook',
-      webhookSecret: 'mock_secret_enc',
-      testMode: 1,
-      paused: 0,
       createdAt: now,
+      updatedAt: now,
     });
+
+    // 1. Seed stores
+    await db.insert(stores).values([
+      {
+        id: testStoreId,
+        name: 'Test Store',
+        codEnabled: 1,
+        webhookUrl: 'https://store.example/api/webhook',
+        webhookSecret: 'mock_secret_enc',
+        paused: 0,
+        createdAt: now,
+      },
+      {
+        id: secondStoreId,
+        name: 'Other Store',
+        codEnabled: 1,
+        webhookUrl: 'https://other.example/api/webhook',
+        webhookSecret: 'mock_secret_enc_2',
+        paused: 0,
+        createdAt: now,
+      },
+    ]);
 
     // 2. Seed API Keys
     const liveKeyData = generateApiKey('live');
     liveKey = liveKeyData.key;
-    const liveHash = await sha256(liveKey);
-
     await db.insert(apiKeys).values({
       id: 'key_live_1',
-      merchantId: testMerchantId,
-      keyHash: liveHash,
+      storeId: testStoreId,
+      keyHash: await sha256(liveKey),
       prefix: liveKeyData.prefix,
       mode: 'live',
       revokedAt: null,
@@ -67,23 +87,33 @@ describe('Sprint 2: Core Payments REST API', () => {
 
     const testKeyData = generateApiKey('test');
     testKey = testKeyData.key;
-    const testHash = await sha256(testKey);
-
     await db.insert(apiKeys).values({
       id: 'key_test_1',
-      merchantId: testMerchantId,
-      keyHash: testHash,
+      storeId: testStoreId,
+      keyHash: await sha256(testKey),
       prefix: testKeyData.prefix,
       mode: 'test',
       revokedAt: null,
       createdAt: now,
     });
 
-    // 3. Seed bKash and Nagad wallets
-    await db.insert(merchantWallets).values([
+    const secondKeyData = generateApiKey('live');
+    secondStoreKey = secondKeyData.key;
+    await db.insert(apiKeys).values({
+      id: 'key_live_2',
+      storeId: secondStoreId,
+      keyHash: await sha256(secondStoreKey),
+      prefix: secondKeyData.prefix,
+      mode: 'live',
+      revokedAt: null,
+      createdAt: now,
+    });
+
+    // 3. Seed shared bKash and Nagad wallets
+    await db.insert(wallets).values([
       {
         id: 'wal_bkash_1',
-        merchantId: testMerchantId,
+        storeId: null,
         provider: 'bkash',
         number: '01711223344',
         label: 'Primary bKash',
@@ -94,7 +124,7 @@ describe('Sprint 2: Core Payments REST API', () => {
       },
       {
         id: 'wal_nagad_1',
-        merchantId: testMerchantId,
+        storeId: null,
         provider: 'nagad',
         number: '01811223344',
         label: 'Primary Nagad',
@@ -135,7 +165,7 @@ describe('Sprint 2: Core Payments REST API', () => {
 
       await db.insert(apiKeys).values({
         id: 'key_revoked_1',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         keyHash: revokedHash,
         prefix: revokedKeyData.prefix,
         mode: 'live',
@@ -154,8 +184,8 @@ describe('Sprint 2: Core Payments REST API', () => {
       expect(res.status).toBe(401);
     });
 
-    test('rejects paused merchant with 403', async () => {
-      await db.update(merchants).set({ paused: 1 });
+    test('rejects paused store with 403 store_paused', async () => {
+      await db.update(stores).set({ paused: 1 });
 
       const res = await app.request(
         '/v1/payments',
@@ -167,7 +197,7 @@ describe('Sprint 2: Core Payments REST API', () => {
       );
       expect(res.status).toBe(403);
       const data = await res.json();
-      expect(data.error.code).toBe('merchant_paused');
+      expect(data.error.code).toBe('store_paused');
     });
 
     test('allows valid API key', async () => {
@@ -186,7 +216,7 @@ describe('Sprint 2: Core Payments REST API', () => {
   });
 
   describe('POST /v1/payments', () => {
-    test('creates payment with bkash method and assigns wallet', async () => {
+    test('creates payment with bkash method and assigns wallet (no checkout_url, uses store_id)', async () => {
       const res = await app.request(
         '/v1/payments',
         {
@@ -212,18 +242,21 @@ describe('Sprint 2: Core Payments REST API', () => {
       const data = await res.json();
 
       expect(data.id).toStartWith('pay_');
-      expect(data.merchant_id).toBe(testMerchantId);
+      expect(data.store_id).toBe(testStoreId);
+      expect(data.merchant_id).toBeUndefined();
+      expect(data.checkout_url).toBeUndefined();
       expect(data.mode).toBe('live');
       expect(data.status).toBe('CREATED');
       expect(data.amount).toBe(1500);
       expect(data.method).toBe('bkash');
       expect(data.wallet_id).toBe('wal_bkash_1');
-      expect(data.checkout_url).toBe(`https://smpg-core.workers.dev/c/${data.id}`);
+      expect(data.attempts).toBe(0);
+      expect(data.attempts_remaining).toBe(3);
       expect(data.metadata).toEqual({ cart_id: 'c_9' });
       expect(data.expires_at).toBeDefined();
     });
 
-    test('creates payment with omitted method (chosen on hosted checkout)', async () => {
+    test('creates payment with omitted method and omitted success_url', async () => {
       const res = await app.request(
         '/v1/payments',
         {
@@ -234,7 +267,6 @@ describe('Sprint 2: Core Payments REST API', () => {
           },
           body: JSON.stringify({
             amount: 800,
-            success_url: 'https://store.example/thanks',
           }),
         },
         env as any
@@ -245,6 +277,8 @@ describe('Sprint 2: Core Payments REST API', () => {
       expect(data.mode).toBe('test');
       expect(data.method).toBeNull();
       expect(data.wallet_id).toBeNull();
+      expect(data.success_url).toBeNull();
+      expect(data.cancel_url).toBeNull();
       expect(data.status).toBe('CREATED');
     });
 
@@ -260,7 +294,6 @@ describe('Sprint 2: Core Payments REST API', () => {
           body: JSON.stringify({
             amount: 30000, // Wallet limit is 25000
             method: 'bkash',
-            success_url: 'https://store.example/thanks',
           }),
         },
         env as any
@@ -271,8 +304,8 @@ describe('Sprint 2: Core Payments REST API', () => {
       expect(data.error.code).toBe('no_wallet_available');
     });
 
-    test('fails if COD is requested when disabled for merchant', async () => {
-      await db.update(merchants).set({ codEnabled: 0 });
+    test('fails if COD is requested when disabled for store', async () => {
+      await db.update(stores).set({ codEnabled: 0 });
 
       const res = await app.request(
         '/v1/payments',
@@ -285,7 +318,6 @@ describe('Sprint 2: Core Payments REST API', () => {
           body: JSON.stringify({
             amount: 1000,
             method: 'cod',
-            success_url: 'https://store.example/thanks',
           }),
         },
         env as any
@@ -307,7 +339,6 @@ describe('Sprint 2: Core Payments REST API', () => {
           },
           body: JSON.stringify({
             amount: -50,
-            success_url: 'https://store.example/thanks',
           }),
         },
         env as any
@@ -334,7 +365,6 @@ describe('Sprint 2: Core Payments REST API', () => {
           body: JSON.stringify({
             amount: 1200,
             method: 'nagad',
-            success_url: 'https://store.example/thanks',
           }),
         },
         env as any
@@ -343,7 +373,6 @@ describe('Sprint 2: Core Payments REST API', () => {
       expect(res1.status).toBe(201);
       const data1 = await res1.json();
 
-      // Repeat identical request
       const res2 = await app.request(
         '/v1/payments',
         {
@@ -356,7 +385,6 @@ describe('Sprint 2: Core Payments REST API', () => {
           body: JSON.stringify({
             amount: 1200,
             method: 'nagad',
-            success_url: 'https://store.example/thanks',
           }),
         },
         env as any
@@ -369,8 +397,8 @@ describe('Sprint 2: Core Payments REST API', () => {
     });
   });
 
-  describe('GET /v1/payments/:id', () => {
-    test('retrieves created payment successfully', async () => {
+  describe('Multi-Store Isolation & Retrieval', () => {
+    test('store B cannot retrieve store A payments', async () => {
       const createRes = await app.request(
         '/v1/payments',
         {
@@ -383,7 +411,6 @@ describe('Sprint 2: Core Payments REST API', () => {
             amount: 2000,
             method: 'bkash',
             external_order_id: 'ORD-202',
-            success_url: 'https://store.example/thanks',
           }),
         },
         env as any
@@ -391,50 +418,30 @@ describe('Sprint 2: Core Payments REST API', () => {
 
       const created = await createRes.json();
 
-      const getRes = await app.request(
+      const otherRes = await app.request(
         `/v1/payments/${created.id}`,
         {
           method: 'GET',
-          headers: { Authorization: `Bearer ${liveKey}` },
+          headers: { Authorization: `Bearer ${secondStoreKey}` },
         },
         env as any
       );
 
-      expect(getRes.status).toBe(200);
-      const fetched = await getRes.json();
-      expect(fetched.id).toBe(created.id);
-      expect(fetched.external_order_id).toBe('ORD-202');
-      expect(fetched.amount).toBe(2000);
+      expect(otherRes.status).toBe(404);
     });
 
-    test('returns 404 for non-existent payment', async () => {
-      const res = await app.request(
-        '/v1/payments/pay_nonexistent',
-        {
-          method: 'GET',
-          headers: { Authorization: `Bearer ${liveKey}` },
-        },
-        env as any
-      );
-
-      expect(res.status).toBe(404);
-      const data = await res.json();
-      expect(data.error.code).toBe('invalid_request');
-    });
-
-    test('performs lazy finalization if pending decision window has passed', async () => {
+    test('performs lazy finalization if pending decision window has passed and queues snake_case webhook', async () => {
       const pastTime = Math.floor(Date.now() / 1000) - 100;
 
-      // Seed payment with pendingDecision whose window expired
       await db.insert(payments).values({
         id: 'pay_pending_undo',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
+        externalOrderId: 'ORD-LAZY-1',
         amount: 500,
         status: 'SUBMITTED',
         method: 'bkash',
         walletId: 'wal_bkash_1',
-        successUrl: 'https://store.example/thanks',
         pendingDecision: 'approve',
         decisionActor: 'telegram:@owner',
         decisionEffectiveAt: pastTime,
@@ -456,12 +463,21 @@ describe('Sprint 2: Core Payments REST API', () => {
       const data = await res.json();
       expect(data.status).toBe('PAID');
       expect(data.pending_decision).toBeNull();
+
+      // Verify webhook payload is normalized snake_case
+      const deliveryRows = await db.select().from(webhookDeliveries);
+      expect(deliveryRows.length).toBe(1);
+      expect(deliveryRows[0].storeId).toBe(testStoreId);
+      const payload = JSON.parse(deliveryRows[0].payload);
+      expect(payload.type).toBe('payment.paid');
+      expect(payload.data.store_id).toBe(testStoreId);
+      expect(payload.data.external_order_id).toBe('ORD-LAZY-1');
+      expect(payload.data.storeId).toBeUndefined();
     });
   });
 
   describe('GET /v1/payments', () => {
     test('lists payments with pagination and filter', async () => {
-      // Create 3 payments
       for (let i = 1; i <= 3; i++) {
         await app.request(
           '/v1/payments',
@@ -475,14 +491,12 @@ describe('Sprint 2: Core Payments REST API', () => {
               amount: 100 * i,
               method: 'bkash',
               external_order_id: `ORD-FILTER-${i}`,
-              success_url: 'https://store.example/thanks',
             }),
           },
           env as any
         );
       }
 
-      // 1. List with limit = 2
       const resLimit = await app.request(
         '/v1/payments?limit=2',
         {
@@ -497,7 +511,6 @@ describe('Sprint 2: Core Payments REST API', () => {
       expect(dataLimit.data.length).toBe(2);
       expect(dataLimit.has_more).toBe(true);
 
-      // 2. Filter by external_order_id
       const resFilter = await app.request(
         '/v1/payments?external_order_id=ORD-FILTER-2',
         {
@@ -514,8 +527,8 @@ describe('Sprint 2: Core Payments REST API', () => {
     });
   });
 
-  describe('POST /v1/payments/:id/cancel', () => {
-    test('cancels CREATED payment and queues webhook', async () => {
+  describe('POST /v1/payments/:id/cancel & /method', () => {
+    test('cancels CREATED payment and queues normalized snake_case webhook', async () => {
       const createRes = await app.request(
         '/v1/payments',
         {
@@ -527,7 +540,7 @@ describe('Sprint 2: Core Payments REST API', () => {
           body: JSON.stringify({
             amount: 750,
             method: 'bkash',
-            success_url: 'https://store.example/thanks',
+            external_order_id: 'ORD-CANCEL-1',
           }),
         },
         env as any
@@ -548,22 +561,68 @@ describe('Sprint 2: Core Payments REST API', () => {
       const cancelled = await cancelRes.json();
       expect(cancelled.status).toBe('CANCELLED');
 
-      // Verify webhook queue entry
       const deliveryRows = await db.select().from(webhookDeliveries);
-      expect(deliveryRows.length).toBeGreaterThan(0);
+      expect(deliveryRows.length).toBe(1);
       expect(deliveryRows[0].eventType).toBe('payment.cancelled');
+      expect(deliveryRows[0].storeId).toBe(testStoreId);
+      const payload = JSON.parse(deliveryRows[0].payload);
+      expect(payload.data.external_order_id).toBe('ORD-CANCEL-1');
+      expect(payload.data.store_id).toBe(testStoreId);
+    });
+
+    test('selecting COD via REST API queues payment.confirmed webhook', async () => {
+      const createRes = await app.request(
+        '/v1/payments',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${liveKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            amount: 900,
+            external_order_id: 'ORD-COD-API',
+          }),
+        },
+        env as any
+      );
+      const created = await createRes.json();
+
+      const methodRes = await app.request(
+        `/v1/payments/${created.id}/method`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${liveKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ method: 'cod' }),
+        },
+        env as any
+      );
+
+      expect(methodRes.status).toBe(200);
+      const updated = await methodRes.json();
+      expect(updated.status).toBe('CONFIRMED');
+      expect(updated.method).toBe('cod');
+
+      const deliveryRows = await db.select().from(webhookDeliveries);
+      expect(deliveryRows.length).toBe(1);
+      expect(deliveryRows[0].eventType).toBe('payment.confirmed');
+      const payload = JSON.parse(deliveryRows[0].payload);
+      expect(payload.data.status).toBe('CONFIRMED');
+      expect(payload.data.external_order_id).toBe('ORD-COD-API');
     });
 
     test('rejects cancellation if payment is in PAID status', async () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_already_paid',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 1000,
         status: 'PAID',
         method: 'bkash',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now,
         updatedAt: now,

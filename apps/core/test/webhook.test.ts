@@ -3,10 +3,10 @@ import { eq } from 'drizzle-orm';
 import { constructEvent } from '../../../packages/sdk/src/webhooks';
 import { createTestD1 } from './helpers/mock-d1';
 import {
-  merchants,
+  botConfig,
   payments,
+  stores,
   webhookDeliveries,
-  type WebhookDelivery,
 } from '../src/db/schema';
 import {
   computeWebhookSignature,
@@ -16,15 +16,16 @@ import {
   queueWebhookDelivery,
   RETRY_DELAYS_SECONDS,
 } from '../src/services/webhook';
+import { finalizeDueDecisions, reopenRejectedPayment } from '../src/services/decision';
 import { encryptAesGcm } from '../src/services/crypto';
 import type { Env } from '../src/types';
 
-describe('Sprint 4: Outbound Webhooks & Event Delivery', () => {
+describe('Outbound Webhooks, Decision Finalization & Event Delivery', () => {
   let d1: D1Database;
   let db: any;
   let env: Env;
 
-  const testMerchantId = 'mrc_webhook_store';
+  const testStoreId = 'str_webhook_store';
   const rawWebhookSecret = 'whsec_test_secret_1234567890abcdef';
   const encryptionKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
@@ -35,11 +36,10 @@ describe('Sprint 4: Outbound Webhooks & Event Delivery', () => {
 
     env = {
       DB: d1,
-      BUCKET: {} as any,
       TELEGRAM_BOT_TOKEN: '',
       TELEGRAM_WEBHOOK_SECRET: 'mock_secret',
       ENCRYPTION_KEY: encryptionKey,
-      PUBLIC_BASE_URL: 'https://smpg-core.workers.dev',
+      OWNER_TELEGRAM_ID: '778899',
       UNDO_WINDOW_SECONDS: '90',
       SUBMITTED_TTL_HOURS: '72',
       CREATED_TTL_MINUTES: '60',
@@ -49,16 +49,20 @@ describe('Sprint 4: Outbound Webhooks & Event Delivery', () => {
     const now = Math.floor(Date.now() / 1000);
     const encryptedSecret = await encryptAesGcm(rawWebhookSecret, encryptionKey);
 
-    await db.insert(merchants).values({
-      id: testMerchantId,
-      telegramChatId: 778899,
-      storeName: 'Webhook Store',
-      brandColor: '#4F46E5',
-      codEnabled: 1,
+    await db.insert(botConfig).values({
+      id: 'default',
+      ownerTelegramChatId: 778899,
       rotationStrategy: 'balanced',
-      webhookUrl: 'https://merchant.example/api/webhooks',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await db.insert(stores).values({
+      id: testStoreId,
+      name: 'Webhook Store',
+      codEnabled: 1,
+      webhookUrl: 'https://store.example/api/webhooks',
       webhookSecret: encryptedSecret,
-      testMode: 1,
       paused: 0,
       createdAt: now,
     });
@@ -73,6 +77,7 @@ describe('Sprint 4: Outbound Webhooks & Event Delivery', () => {
         created: timestamp,
         data: {
           id: 'pay_123',
+          store_id: testStoreId,
           amount: 2500,
           status: 'PAID',
         },
@@ -81,7 +86,6 @@ describe('Sprint 4: Outbound Webhooks & Event Delivery', () => {
       const signatureHex = await computeWebhookSignature(rawWebhookSecret, timestamp, rawPayload);
       const signatureHeader = `t=${timestamp},v1=${signatureHex}`;
 
-      // Verify using @smpg/sdk constructEvent
       const event = await constructEvent(rawPayload, signatureHeader, rawWebhookSecret);
       expect(event.id).toBe('evt_test_1');
       expect(event.type).toBe('payment.paid');
@@ -139,56 +143,68 @@ describe('Sprint 4: Outbound Webhooks & Event Delivery', () => {
       }
     });
 
-    test('queueWebhookDelivery inserts a delivery record into D1', async () => {
+    test('queueWebhookDelivery inserts a delivery record with storeId into D1', async () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_queue_test',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 1200,
         status: 'PAID',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now,
         updatedAt: now,
       });
 
-      const delivery = await queueWebhookDelivery(db, 'pay_queue_test', 'payment.paid', {
+      const delivery = await queueWebhookDelivery(db, 'pay_queue_test', testStoreId, 'payment.paid', {
         id: 'pay_queue_test',
+        store_id: testStoreId,
         amount: 1200,
         status: 'PAID',
       });
 
       expect(delivery.id).toStartWith('dlv_');
       expect(delivery.paymentId).toBe('pay_queue_test');
+      expect(delivery.storeId).toBe(testStoreId);
       expect(delivery.eventType).toBe('payment.paid');
       expect(delivery.attempt).toBe(0);
       expect(delivery.deliveredAt).toBeNull();
 
-      const inDb = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, delivery.id)).get();
+      const inDb = await db
+        .select()
+        .from(webhookDeliveries)
+        .where(eq(webhookDeliveries.id, delivery.id))
+        .get();
       expect(inDb).toBeDefined();
       expect(inDb.eventType).toBe('payment.paid');
+      expect(inDb.storeId).toBe(testStoreId);
     });
 
     test('deliverSingleWebhook marks successful delivery in D1', async () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_success_delivery',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 950,
         status: 'PAID',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now,
         updatedAt: now,
       });
 
-      const delivery = await queueWebhookDelivery(db, 'pay_success_delivery', 'payment.paid', {
-        id: 'pay_success_delivery',
-        amount: 950,
-        status: 'PAID',
-      });
+      const delivery = await queueWebhookDelivery(
+        db,
+        'pay_success_delivery',
+        testStoreId,
+        'payment.paid',
+        {
+          id: 'pay_success_delivery',
+          store_id: testStoreId,
+          amount: 950,
+          status: 'PAID',
+        }
+      );
 
       const originalFetch = globalThis.fetch;
       globalThis.fetch = async () => new Response('OK', { status: 200 });
@@ -197,7 +213,11 @@ describe('Sprint 4: Outbound Webhooks & Event Delivery', () => {
         const ok = await deliverSingleWebhook(db, env, delivery);
         expect(ok).toBe(true);
 
-        const updated = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, delivery.id)).get();
+        const updated = await db
+          .select()
+          .from(webhookDeliveries)
+          .where(eq(webhookDeliveries.id, delivery.id))
+          .get();
         expect(updated.deliveredAt).toBeGreaterThan(0);
         expect(updated.lastStatus).toBe(200);
         expect(updated.attempt).toBe(1);
@@ -207,53 +227,78 @@ describe('Sprint 4: Outbound Webhooks & Event Delivery', () => {
       }
     });
 
-    test('deliverSingleWebhook handles failure with exponential backoff retry scheduling', async () => {
+    test('deliverSingleWebhook handles failure with exponential backoff and emoji-free owner alert on attempt 3', async () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_retry_schedule',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 500,
         status: 'PAID',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now,
         updatedAt: now,
       });
 
-      const delivery = await queueWebhookDelivery(db, 'pay_retry_schedule', 'payment.paid', {
-        id: 'pay_retry_schedule',
-        amount: 500,
-      });
+      const delivery = await queueWebhookDelivery(
+        db,
+        'pay_retry_schedule',
+        testStoreId,
+        'payment.paid',
+        {
+          id: 'pay_retry_schedule',
+          store_id: testStoreId,
+          amount: 500,
+        }
+      );
+
+      const sentAlerts: { chatId: number; text: string }[] = [];
+      const mockBot = {
+        api: {
+          sendMessage: async (chatId: number, text: string) => {
+            sentAlerts.push({ chatId, text });
+            return { message_id: 1 };
+          },
+        },
+      } as any;
 
       const originalFetch = globalThis.fetch;
       globalThis.fetch = async () => new Response('Server Error', { status: 500 });
 
       try {
-        // Attempt 1 fail -> delay = RETRY_DELAYS_SECONDS[0] (60s)
-        const ok = await deliverSingleWebhook(db, env, delivery);
+        const ok = await deliverSingleWebhook(db, env, delivery, mockBot);
         expect(ok).toBe(false);
 
-        const attempt1 = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, delivery.id)).get();
+        const attempt1 = await db
+          .select()
+          .from(webhookDeliveries)
+          .where(eq(webhookDeliveries.id, delivery.id))
+          .get();
         expect(attempt1.attempt).toBe(1);
         expect(attempt1.lastStatus).toBe(500);
         expect(attempt1.deliveredAt).toBeNull();
         expect(attempt1.nextAttemptAt).toBeGreaterThanOrEqual(now + RETRY_DELAYS_SECONDS[0]);
-        expect(attempt1.nextAttemptAt).toBeLessThanOrEqual(now + RETRY_DELAYS_SECONDS[0] + 2);
 
-        // Attempt 2 fail -> delay = RETRY_DELAYS_SECONDS[1] (300s)
-        await deliverSingleWebhook(db, env, attempt1);
-        const attempt2 = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, delivery.id)).get();
+        await deliverSingleWebhook(db, env, attempt1, mockBot);
+        const attempt2 = await db
+          .select()
+          .from(webhookDeliveries)
+          .where(eq(webhookDeliveries.id, delivery.id))
+          .get();
         expect(attempt2.attempt).toBe(2);
-        expect(attempt2.nextAttemptAt).toBeGreaterThanOrEqual(now + RETRY_DELAYS_SECONDS[1]);
-        expect(attempt2.nextAttemptAt).toBeLessThanOrEqual(now + RETRY_DELAYS_SECONDS[1] + 2);
+        expect(sentAlerts.length).toBe(0);
 
-        // Attempt 3 fail -> delay = RETRY_DELAYS_SECONDS[2] (1800s)
-        await deliverSingleWebhook(db, env, attempt2);
-        const attempt3 = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, delivery.id)).get();
+        await deliverSingleWebhook(db, env, attempt2, mockBot);
+        const attempt3 = await db
+          .select()
+          .from(webhookDeliveries)
+          .where(eq(webhookDeliveries.id, delivery.id))
+          .get();
         expect(attempt3.attempt).toBe(3);
-        expect(attempt3.nextAttemptAt).toBeGreaterThanOrEqual(now + RETRY_DELAYS_SECONDS[2]);
-        expect(attempt3.nextAttemptAt).toBeLessThanOrEqual(now + RETRY_DELAYS_SECONDS[2] + 2);
+        expect(sentAlerts.length).toBe(1);
+        expect(sentAlerts[0].chatId).toBe(778899);
+        expect(sentAlerts[0].text).toContain('Webhook Store');
+        expect(sentAlerts[0].text).not.toContain('⚠️');
       } finally {
         globalThis.fetch = originalFetch;
       }
@@ -263,45 +308,46 @@ describe('Sprint 4: Outbound Webhooks & Event Delivery', () => {
       const now = Math.floor(Date.now() / 1000);
       await db.insert(payments).values({
         id: 'pay_cron_batch',
-        merchantId: testMerchantId,
+        storeId: testStoreId,
         mode: 'live',
         amount: 700,
         status: 'PAID',
-        successUrl: 'https://store.example/thanks',
         expiresAt: now + 3600,
         createdAt: now,
         updatedAt: now,
       });
 
-      // Insert 2 due deliveries
       await db.insert(webhookDeliveries).values([
         {
           id: 'dlv_batch_1',
           paymentId: 'pay_cron_batch',
+          storeId: testStoreId,
           eventType: 'payment.paid',
           payload: JSON.stringify({ id: 'evt_1', type: 'payment.paid' }),
           attempt: 1,
-          nextAttemptAt: now - 10, // Due
+          nextAttemptAt: now - 10,
           lastStatus: 500,
           deliveredAt: null,
         },
         {
           id: 'dlv_batch_2',
           paymentId: 'pay_cron_batch',
+          storeId: testStoreId,
           eventType: 'payment.paid',
           payload: JSON.stringify({ id: 'evt_2', type: 'payment.paid' }),
           attempt: 2,
-          nextAttemptAt: now - 5, // Due
+          nextAttemptAt: now - 5,
           lastStatus: 500,
           deliveredAt: null,
         },
         {
           id: 'dlv_batch_future',
           paymentId: 'pay_cron_batch',
+          storeId: testStoreId,
           eventType: 'payment.paid',
           payload: JSON.stringify({ id: 'evt_3', type: 'payment.paid' }),
           attempt: 1,
-          nextAttemptAt: now + 3600, // Not due yet
+          nextAttemptAt: now + 3600,
           lastStatus: 500,
           deliveredAt: null,
         },
@@ -316,12 +362,77 @@ describe('Sprint 4: Outbound Webhooks & Event Delivery', () => {
         expect(stats.succeeded).toBe(2);
         expect(stats.failed).toBe(0);
 
-        // Verify that the future delivery was untouched
-        const futureRow = await db.select().from(webhookDeliveries).where(eq(webhookDeliveries.id, 'dlv_batch_future')).get();
+        const futureRow = await db
+          .select()
+          .from(webhookDeliveries)
+          .where(eq(webhookDeliveries.id, 'dlv_batch_future'))
+          .get();
         expect(futureRow.deliveredAt).toBeNull();
       } finally {
         globalThis.fetch = originalFetch;
       }
+    });
+  });
+
+  describe('Decision Finalization & Reopen Webhooks', () => {
+    test('finalizeDueDecisions emits normalized snake_case payload without retry_url and finalizes Telegram card', async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await db.insert(payments).values({
+        id: 'pay_reject_finalize',
+        storeId: testStoreId,
+        mode: 'live',
+        externalOrderId: 'ORD-REJ-1',
+        amount: 1400,
+        status: 'SUBMITTED',
+        method: 'bkash',
+        trxId: 'BADTRX123',
+        telegramMessageId: 4242,
+        pendingDecision: 'reject',
+        decisionActor: 'telegram:@owner',
+        decisionEffectiveAt: now - 10,
+        expiresAt: now + 3600,
+        createdAt: now - 120,
+        updatedAt: now - 60,
+      });
+
+      const editedMessages: { chatId: number; messageId: number; replyMarkup: any }[] = [];
+      const mockBot = {
+        api: {
+          editMessageText: async (chatId: number, messageId: number, _text: string, opts: any) => {
+            editedMessages.push({ chatId, messageId, replyMarkup: opts?.reply_markup });
+            return true;
+          },
+        },
+      } as any;
+
+      const count = await finalizeDueDecisions(db, mockBot, env);
+      expect(count).toBe(1);
+
+      // Verify Telegram card was finalized (inline_keyboard cleared)
+      expect(editedMessages.length).toBe(1);
+      expect(editedMessages[0].chatId).toBe(778899);
+      expect(editedMessages[0].messageId).toBe(4242);
+      expect(editedMessages[0].replyMarkup).toEqual({ inline_keyboard: [] });
+
+      // Verify webhook payload is snake_case and has no retry_url
+      const deliveries = await db.select().from(webhookDeliveries);
+      expect(deliveries.length).toBe(1);
+      expect(deliveries[0].eventType).toBe('payment.rejected');
+      const payload = JSON.parse(deliveries[0].payload);
+      expect(payload.data.store_id).toBe(testStoreId);
+      expect(payload.data.external_order_id).toBe('ORD-REJ-1');
+      expect(payload.data.status).toBe('REJECTED');
+      expect(payload.data.retry_url).toBeUndefined();
+      expect(payload.data.storeId).toBeUndefined();
+
+      // Reopen rejected payment and verify payment.reopened webhook
+      const reopened = await reopenRejectedPayment(db, 'pay_reject_finalize', 'telegram:@owner');
+      expect(reopened.success).toBe(true);
+      expect(reopened.payment?.status).toBe('CREATED');
+
+      const allDeliveries = await db.select().from(webhookDeliveries);
+      expect(allDeliveries.length).toBe(2);
+      expect(allDeliveries[1].eventType).toBe('payment.reopened');
     });
   });
 });

@@ -1,6 +1,7 @@
-import { and, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { Database } from '../db';
-import { merchantWallets, payments, type MerchantWallet } from '../db/schema';
+import { botConfig, payments, wallets, type Wallet } from '../db/schema';
+import type { PaymentMethod } from '../types';
 
 /**
  * Returns the unix timestamp for 00:00:00 AM of today in Asia/Dhaka (UTC+6).
@@ -20,42 +21,56 @@ export function getDhakaStartOfDayTimestamp(): number {
 }
 
 export interface WalletWithUsage {
-  wallet: MerchantWallet;
+  wallet: Wallet;
   reservedToday: number;
   availableCapacity: number;
   percentageUsed: number;
 }
 
 /**
- * Calculates current day's reserved taka for all active wallets of a merchant.
+ * Reads the owner's configured wallet rotation strategy from bot_config.
  */
-export async function getMerchantWalletsWithUsage(
+export async function getRotationStrategy(db: Database): Promise<'balanced' | 'fill_first'> {
+  const config = await db.select().from(botConfig).limit(1).get();
+  return config?.rotationStrategy === 'fill_first' ? 'fill_first' : 'balanced';
+}
+
+/**
+ * Calculates current day's reserved taka for eligible wallets.
+ * - When `storeId` is provided, returns shared wallets (store_id IS NULL) and wallets scoped to that store.
+ * - When `storeId` is omitted, returns all owner wallets (e.g. for /wallets dashboard).
+ * - Always aggregates `reservedToday` across ALL stores referencing each wallet_id to enforce the SIM daily cap.
+ */
+export async function getWalletsWithUsage(
   db: Database,
-  merchantId: string,
-  provider?: 'bkash' | 'nagad'
+  options?: {
+    storeId?: string;
+    provider?: 'bkash' | 'nagad';
+  }
 ): Promise<WalletWithUsage[]> {
   const startOfDay = getDhakaStartOfDayTimestamp();
 
-  // 1. Fetch wallets
-  const whereConditions = [eq(merchantWallets.merchantId, merchantId)];
-  if (provider) {
-    whereConditions.push(eq(merchantWallets.provider, provider));
+  const whereConditions = [];
+  if (options?.storeId) {
+    whereConditions.push(or(isNull(wallets.storeId), eq(wallets.storeId, options.storeId)));
+  }
+  if (options?.provider) {
+    whereConditions.push(eq(wallets.provider, options.provider));
   }
 
-  const wallets = await db
+  const walletRows = await db
     .select()
-    .from(merchantWallets)
-    .where(and(...whereConditions))
-    .orderBy(merchantWallets.priority, merchantWallets.createdAt);
+    .from(wallets)
+    .where(whereConditions.length > 0 ? and(...whereConditions) : undefined)
+    .orderBy(wallets.priority, wallets.createdAt);
 
-  if (wallets.length === 0) {
+  if (walletRows.length === 0) {
     return [];
   }
 
-  const walletIds = wallets.map((w) => w.id);
+  const walletIds = walletRows.map((w) => w.id);
 
-  // 2. Query today's active reserved payments
-  // Count payments in CREATED, SUBMITTED, CONFIRMED, or PAID created today
+  // Aggregate today's active reserved payments across ALL stores for each wallet_id
   const activeStatuses = ['CREATED', 'SUBMITTED', 'CONFIRMED', 'PAID'];
 
   const usageRows = await db
@@ -80,10 +95,11 @@ export async function getMerchantWalletsWithUsage(
     }
   }
 
-  return wallets.map((w) => {
+  return walletRows.map((w) => {
     const reservedToday = usageMap.get(w.id) ?? 0;
     const availableCapacity = Math.max(0, w.dailyLimit - reservedToday);
-    const percentageUsed = w.dailyLimit > 0 ? Math.min(100, Math.round((reservedToday / w.dailyLimit) * 100)) : 0;
+    const percentageUsed =
+      w.dailyLimit > 0 ? Math.min(100, Math.round((reservedToday / w.dailyLimit) * 100)) : 0;
 
     return {
       wallet: w,
@@ -95,18 +111,19 @@ export async function getMerchantWalletsWithUsage(
 }
 
 /**
- * Selects an optimal active wallet for an incoming payment based on rotation strategy.
+ * Selects an optimal active wallet eligible for a store based on rotation strategy.
  */
 export async function assignWalletForPayment(
   db: Database,
-  merchantId: string,
+  storeId: string,
   provider: 'bkash' | 'nagad',
   amount: number,
-  strategy: 'balanced' | 'fill_first' = 'balanced'
-): Promise<MerchantWallet | null> {
-  const walletsWithUsage = await getMerchantWalletsWithUsage(db, merchantId, provider);
+  strategy?: 'balanced' | 'fill_first'
+): Promise<Wallet | null> {
+  const effectiveStrategy = strategy ?? (await getRotationStrategy(db));
+  const walletsWithUsage = await getWalletsWithUsage(db, { storeId, provider });
 
-  // Filter only active wallets that have sufficient capacity
+  // Filter only active wallets that have sufficient remaining daily capacity
   const eligible = walletsWithUsage.filter(
     (w) => w.wallet.active === 1 && w.reservedToday + amount <= w.wallet.dailyLimit
   );
@@ -115,13 +132,12 @@ export async function assignWalletForPayment(
     return null;
   }
 
-  if (strategy === 'fill_first') {
-    // Pick the first by priority that still has room
+  if (effectiveStrategy === 'fill_first') {
     eligible.sort((a, b) => a.wallet.priority - b.wallet.priority);
     return eligible[0].wallet;
   }
 
-  // Balanced strategy: pick the one with lowest reserved_today
+  // Balanced strategy: pick the wallet with the lowest reservedToday
   eligible.sort((a, b) => {
     if (a.reservedToday !== b.reservedToday) {
       return a.reservedToday - b.reservedToday;
@@ -130,4 +146,39 @@ export async function assignWalletForPayment(
   });
 
   return eligible[0].wallet;
+}
+
+/**
+ * Returns the list of payment methods currently available for a store and amount.
+ */
+export async function getAvailableMethodsForStore(
+  db: Database,
+  storeId: string,
+  amount: number,
+  codEnabled: number
+): Promise<PaymentMethod[]> {
+  const methods: PaymentMethod[] = [];
+  if (codEnabled === 1) {
+    methods.push('cod');
+  }
+
+  const bkashWallets = await getWalletsWithUsage(db, { storeId, provider: 'bkash' });
+  if (
+    bkashWallets.some(
+      (w) => w.wallet.active === 1 && w.reservedToday + amount <= w.wallet.dailyLimit
+    )
+  ) {
+    methods.push('bkash');
+  }
+
+  const nagadWallets = await getWalletsWithUsage(db, { storeId, provider: 'nagad' });
+  if (
+    nagadWallets.some(
+      (w) => w.wallet.active === 1 && w.reservedToday + amount <= w.wallet.dailyLimit
+    )
+  ) {
+    methods.push('nagad');
+  }
+
+  return methods;
 }

@@ -1,0 +1,20 @@
+# Copy this file to wrangler.toml (or run `bun run setup` to configure automatically)
+name = "smpg-core"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+UNDO_WINDOW_SECONDS = "90"
+SUBMITTED_TTL_HOURS = "72"
+CREATED_TTL_MINUTES = "60"
+LATE_SUBMIT_HOURS = "24"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "smpg"
+database_id = "YOUR_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["* * * * *"]

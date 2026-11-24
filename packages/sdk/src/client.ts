@@ -171,7 +171,7 @@ export class SMPG {
     /**
      * Verify incoming webhook signature and construct event object.
      */
-    constructEvent: async <T = any>(
+    constructEvent: async <T = Payment>(
       rawBody: string,
       signatureHeader: string,
       secretOverride?: string,

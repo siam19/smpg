@@ -2,14 +2,17 @@
 
 ## 1. Overview & Architecture
 
-SMPG is a multi-tenant payment gateway designed specifically for the Bangladeshi e-commerce landscape. In Bangladesh, small merchants and social-commerce sellers frequently lack commercial trade licenses required for formal merchant accounts (such as bKash Merchant API or SSLCommerz). SMPG enables merchants to accept **bKash Personal Send Money**, **Nagad Personal Send Money**, and **Cash on Delivery (COD)** using standard personal numbers.
+SMPG is a self-hosted, single-owner, multi-store payment gateway designed for the Bangladeshi e-commerce landscape. Each user deploys a single Cloudflare Worker + D1 database (`apps/core`) with their own private Telegram bot, enabling them to accept **bKash Personal Send Money**, **Nagad Personal Send Money**, and **Cash on Delivery (COD)** across multiple storefronts without commercial trade licenses, central servers, or Cloudflare R2.
 
-### Key Architectural Tenets:
-- **Zero Merchant Fees**: No intermediary banking percentage cuts.
-- **Dynamic Wallet Rotation**: Rotates transactions across multiple personal wallets to balance transaction volume and stay safely below daily regulatory limits (BDT 25,000/day per SIM).
-- **Asynchronous Merchant Verification**: Customers submit the Transaction ID (TrxID) after sending money. Merchants receive an interactive Telegram push notification with **Approve** and **Reject** buttons (or quick reply "ok" / "y").
-- **90-Second Undo Window**: Any accidental tap or reply in Telegram can be reversed during a 90-second grace period before the state is permanently committed and webhooks fire.
-- **Strict Webhook-Driven Fulfillment**: Customer redirect to `success_url` happens optimistically when details are submitted. The merchant's order system must **never** mark an order paid until a signed `payment.paid` webhook arrives.
+### Key Architectural Tenets
+- **Self-Hosted & Private**: Deployed on your own Cloudflare account (free Workers + D1 tier, no credit card required) via `bun run setup`.
+- **Single-Owner, Multi-Store**: Your Telegram bot is locked strictly to your Telegram account (`OWNER_TELEGRAM_ID` or one-time `/start <SETUP_TOKEN>`). Create multiple stores (`/stores`), each with its own API keys and webhook URL.
+- **Zero Merchant Fees**: Customers send money directly to your personal bKash/Nagad SIM numbers.
+- **Cross-Store Dynamic Wallet Rotation**: Wallets can be shared across all stores (`store_id = NULL`) or dedicated to one store. The daily ৳25,000/SIM cap aggregates across all stores automatically.
+- **Embedded Custom Checkout**: Storefronts render their own native checkout box using `SMPG` (server) or `SMPGCheckout` (browser-safe `/c/:id/*` endpoints).
+- **Asynchronous Telegram Verification**: Customers submit their Transaction ID (TrxID). You receive a clean plain-text Telegram alert (no emojis) with the store name, amount, wallet number, and TrxID, and tap **Approve** or **Reject** (or reply `"ok"` / `"y"`).
+- **90-Second Undo Window**: Any accidental tap or reply can be reversed within 90 seconds before the state is finalized and webhooks fire.
+- **Strict Webhook-Driven Fulfillment**: Never mark a prepaid order `PAID` on client submission. Wait for the signed `payment.paid` webhook (`x-smpg-signature`).
 
 ---
 
@@ -29,7 +32,7 @@ SMPG is a multi-tenant payment gateway designed specifically for the Bangladeshi
                                         │
                          ┌──────────────┴──────────────┐
                          ▼                             ▼
-                  Merchant Approves             Merchant Rejects
+                   Owner Approves                Owner Rejects
                   (90s Undo Window)             (90s Undo Window)
                          │                             │
                          ▼                             ▼
@@ -37,7 +40,7 @@ SMPG is a multi-tenant payment gateway designed specifically for the Bangladeshi
                   │    PAID     │ (terminal)    │  REJECTED   │
                   └─────────────┘               └──────┬──────┘
                                                        │
-                                        Customer resubmits TrxID (max 3)
+                                 Customer resubmits (max 3) OR Owner /reopen
                                                        │
                                                        ▼
                                                 ┌────────────────┐
@@ -45,14 +48,14 @@ SMPG is a multi-tenant payment gateway designed specifically for the Bangladeshi
                                                 └────────────────┘
 ```
 
-### State Definitions:
+### State Definitions
 - `CREATED`: Session initiated via API. Customer has not yet submitted payment.
-- `SUBMITTED`: Customer submitted TrxID (and optional sender phone number). Awaiting merchant verification in Telegram.
-- `CONFIRMED`: Customer confirmed Cash on Delivery order. Ready for physical fulfillment.
-- `PAID`: Merchant verified money arrival in bKash/Nagad app and approved. Final and terminal.
-- `REJECTED`: Merchant marked TrxID as invalid, fake, or not received. Customer can retry up to 3 times within 24 hours.
+- `SUBMITTED`: Customer submitted TrxID (and optional sender phone number). Awaiting owner verification in Telegram.
+- `CONFIRMED`: Customer confirmed Cash on Delivery order (`payment.confirmed` webhook queued immediately). Ready for fulfillment.
+- `PAID`: Owner verified money arrival in bKash/Nagad app and approved. Final and terminal.
+- `REJECTED`: Owner marked TrxID as invalid, fake, or not received. Customer can retry up to 3 times on the storefront's order/checkout page, or the owner can `/reopen` within 7 days.
 - `EXPIRED`: Payment was not submitted within 60 minutes. (A 24-hour late submission grace window allows late submissions if the customer already sent money).
-- `CANCELLED`: Unpaid payment cancelled via API or merchant command.
+- `CANCELLED`: Unpaid payment cancelled via API or owner command.
 
 ---
 
@@ -70,7 +73,7 @@ bun add send-money-payment-gateway
 import { SMPG } from 'send-money-payment-gateway';
 
 export const smpg = new SMPG(process.env.SMPG_SECRET_KEY!, {
-  baseUrl: process.env.SMPG_CORE_URL!, // e.g. https://smpg-core.<account>.workers.dev
+  baseUrl: process.env.SMPG_CORE_URL!, // Your deployed Worker URL, e.g. https://smpg-core.<subdomain>.workers.dev
   webhookSecret: process.env.SMPG_WEBHOOK_SECRET,
   timeoutMs: 15000,
 });
@@ -78,28 +81,31 @@ export const smpg = new SMPG(process.env.SMPG_SECRET_KEY!, {
 
 ### Creating a Payment Session
 ```typescript
-const payment = await smpg.payments.create({
-  amount: 1850,                       // Positive integer in BDT
-  method: 'bkash',                     // Optional: 'bkash' | 'nagad' | 'cod'
-  external_order_id: 'ORD-9823',       // Your store's unique order identifier
-  customer: {
-    name: 'Fahim Hasan',
-    phone: '01711223344',
+const payment = await smpg.payments.create(
+  {
+    amount: 1850,                       // Positive integer in BDT
+    method: 'bkash',                    // Optional: 'bkash' | 'nagad' | 'cod'
+    external_order_id: 'ORD-9823',      // Your store's unique order identifier
+    customer: {
+      name: 'Fahim Hasan',
+      phone: '01711223344',
+    },
+    success_url: 'https://store.com/orders/ORD-9823/thanks', // Optional
+    cancel_url: 'https://store.com/cart',                    // Optional
+    metadata: { cart_id: 'cart_123' },
   },
-  success_url: 'https://store.com/orders/ORD-9823/thanks',
-  cancel_url: 'https://store.com/cart',
-  metadata: { cart_id: 'cart_123' },
-}, {
-  idempotencyKey: 'idem_ord_9823',     // Prevents double charge on retries
-});
+  {
+    idempotencyKey: 'idem_ord_9823',    // Prevents double creation on retries
+  }
+);
 
-console.log(payment.checkout_url);     // Hosted checkout link
-console.log(payment.assigned_wallet);  // { id, provider, number, label }
+console.log(payment.id);               // Pass to embedded checkout UI
+console.log(payment.store_id);         // str_...
+console.log(payment.assigned_wallet);  // { id, provider, number, label } (if method was set)
 ```
 
-### Headless & Custom Checkout Operations
-If building an embedded checkout widget directly on your `/checkout` page:
-
+### Headless Server-Side Checkout Operations
+If proxying checkout actions through your storefront backend:
 ```typescript
 // 1. Set/switch payment method:
 const updated = await smpg.payments.selectMethod(payment.id, 'nagad');
@@ -107,7 +113,8 @@ console.log('Send money to Nagad number:', updated.assigned_wallet?.number);
 
 // 2. Submit customer TrxID from server:
 const submitted = await smpg.payments.submit(payment.id, {
-  trx_id: 'ABC123SEX',
+  trx_id: '9K3L2M1ABC',
+  sender_number: '01711223344',
 });
 ```
 
@@ -115,24 +122,29 @@ const submitted = await smpg.payments.submit(payment.id, {
 
 ## 4. Browser-Safe Client (`SMPGCheckout`)
 
-When rendering an embedded checkout widget on the client side (React, Vue, Svelte), use `SMPGCheckout` without exposing secret API keys:
+When rendering an embedded checkout widget on the client side (React, Vue, Svelte, vanilla JS), use `SMPGCheckout` without exposing secret API keys. `baseUrl` is **required** (pass a string or `{ baseUrl }`):
 
 ```typescript
 import { SMPGCheckout } from 'send-money-payment-gateway';
 
-const checkout = new SMPGCheckout('https://smpg-core.<account>.workers.dev');
+const checkout = new SMPGCheckout({
+  baseUrl: 'https://smpg-core.<subdomain>.workers.dev',
+});
 
-// 1. Fetch checkout session data (store name, brand color, wallet details)
+// 1. Fetch checkout session data (store: { id, name }, amount, available_methods, status)
 const session = await checkout.getSession('pay_xxx');
 
-// 2. Switch method
+// 2. Select or switch method ('bkash' | 'nagad' | 'cod')
 const res = await checkout.selectMethod('pay_xxx', 'bkash');
-console.log('Wallet to pay:', res.assigned_wallet.number);
+console.log('Wallet to pay:', res.assigned_wallet?.number);
 
 // 3. Submit TrxID
-await checkout.submit('pay_xxx', { trx_id: '9K3L2M1ABC' });
+await checkout.submit('pay_xxx', {
+  trx_id: '9K3L2M1ABC',
+  sender_number: '01711223344',
+});
 
-// 4. Poll or check status
+// 4. Check current status
 const status = await checkout.getStatus('pay_xxx');
 ```
 
@@ -140,15 +152,17 @@ const status = await checkout.getStatus('pay_xxx');
 
 ## 5. Webhook Signature Verification
 
-Every outbound webhook includes an HMAC-SHA256 signature in the `SMPG-Signature` header formatted as:
+Every outbound webhook includes an HMAC-SHA256 signature in the `x-smpg-signature` header formatted as:
 `t=<timestamp>,v1=<signature_hex>`
 
-### Verification Rules:
+The event payload contains a normalized snake_case `Payment` object in `event.data` (with `store_id`, `external_order_id`, `status`, `trx_id`, `attempts`, `attempts_remaining`, etc.).
+
+### Verification Rules
 1. Always compute signature over the **raw UTF-8 string request body** (never re-serialized JSON).
 2. Timestamp must be within the 5-minute tolerance window to prevent replay attacks.
-3. Compare signatures using constant-time string equality.
+3. Compare signatures using constant-time equality.
 
-### Node / Express Example:
+### Node / Express Example
 ```typescript
 import express from 'express';
 import { smpg } from './smpg';
@@ -157,7 +171,7 @@ const app = express();
 
 // Use express.raw() to preserve raw body Buffer
 app.post('/api/webhooks/smpg', express.raw({ type: 'application/json' }), async (req, res) => {
-  const signature = req.headers['smpg-signature'] as string;
+  const signature = req.headers['x-smpg-signature'] as string;
   const rawBody = req.body.toString('utf-8');
 
   try {
@@ -182,9 +196,17 @@ app.post('/api/webhooks/smpg', express.raw({ type: 'application/json' }), async 
       case 'payment.rejected':
         await db.orders.update({
           where: { id: event.data.external_order_id },
-          data: { status: 'PAYMENT_REJECTED', retryUrl: event.data.retry_url },
+          data: { status: 'PAYMENT_REJECTED' },
         });
-        // Send SMS/Email with retryUrl so customer can submit valid TrxID
+        // Direct customer to your storefront's order page (e.g. /orders/${event.data.external_order_id})
+        // where they can submit a corrected TrxID via SMPGCheckout.
+        break;
+
+      case 'payment.reopened':
+        await db.orders.update({
+          where: { id: event.data.external_order_id },
+          data: { status: 'AWAITING_VERIFICATION' },
+        });
         break;
     }
 
@@ -195,19 +217,19 @@ app.post('/api/webhooks/smpg', express.raw({ type: 'application/json' }), async 
 });
 ```
 
-### Next.js (App Router) Example:
+### Next.js (App Router) Example
 ```typescript
 // app/api/webhooks/smpg/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { smpg } from '@/lib/smpg';
 
 export async function POST(req: NextRequest) {
-  const signature = req.headers.get('smpg-signature') || '';
+  const signature = req.headers.get('x-smpg-signature') || '';
   const rawBody = await req.text();
 
   try {
     const event = await smpg.webhooks.constructEvent(rawBody, signature);
-    // Handle event...
+    // Handle event idempotently...
     return NextResponse.json({ received: true });
   } catch (err: any) {
     return new NextResponse(`Webhook Error: ${err.message}`, { status: 400 });
@@ -220,16 +242,16 @@ export async function POST(req: NextRequest) {
 ## 6. Full REST API Specification
 
 ### Authentication
-`Authorization: Bearer smpg_live_...` or `Authorization: Bearer smpg_test_...`
+`Authorization: Bearer smpg_live_...` or `Authorization: Bearer smpg_test_...` (scoped to a specific store).
 
 ### Endpoints
-- `POST /v1/payments`: Create payment session (supports `Idempotency-Key`).
+- `POST /v1/payments`: Create payment session (supports `Idempotency-Key`; `success_url`/`cancel_url` optional).
 - `GET /v1/payments/:id`: Retrieve payment details.
 - `GET /v1/payments`: List payments (filters: `external_order_id`, `status`, `limit`, `cursor`).
 - `POST /v1/payments/:id/cancel`: Cancel an unpaid payment.
 - `POST /v1/payments/:id/method`: Set or switch payment method (`bkash`, `nagad`, `cod`).
-- `POST /v1/payments/:id/submit`: Submit customer TrxID from merchant server.
-- `GET /c/:id/data`: Public session data for checkout pages.
+- `POST /v1/payments/:id/submit`: Submit customer TrxID from storefront server.
+- `GET /c/:id/data`: Public session data for embedded checkout UIs (`store: { id, name }`).
 - `POST /c/:id/method`: Public payment method selection.
 - `POST /c/:id/submit`: Public customer TrxID submission (with honeypot).
 - `GET /c/:id/status`: Public status check for polling/live updates.

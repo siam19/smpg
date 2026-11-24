@@ -3,16 +3,17 @@ import { Bot } from 'grammy';
 import type { Database } from '../db';
 import type { Env } from '../types';
 import {
-  merchants,
-  merchantWallets,
   paymentEvents,
   payments,
+  stores,
   trxSubmissions,
-  webhookDeliveries,
+  wallets,
   type Payment,
+  type Wallet,
 } from '../db/schema';
-import { generatePrefixedId } from './crypto';
-import { finalizeNotificationCard } from './notification';
+import { finalizeNotificationCard, getOwnerChatId } from './notification';
+import { formatPaymentResponse } from './payment';
+import { queueWebhookDelivery } from './webhook';
 import { appendGracePeriodStatus, formatCodCard, formatSubmittedCard } from '../bot/views/cards';
 import { createUndoKeyboard } from '../bot/views/keyboards';
 
@@ -22,7 +23,8 @@ import { createUndoKeyboard } from '../bot/views/keyboards';
  */
 export async function finalizeDueDecisions(
   db: Database,
-  bot?: Bot<any>
+  bot?: Bot<any>,
+  env?: Pick<Env, 'OWNER_TELEGRAM_ID'>
 ): Promise<number> {
   const now = Math.floor(Date.now() / 1000);
 
@@ -74,13 +76,15 @@ export async function finalizeDueDecisions(
 
     const fromStatus = payment.status;
     const actor = payment.decisionActor || 'system';
+    const verificationMethod =
+      payment.verificationMethod || (decision === 'approve' ? 'telegram' : null);
 
     // 2. Update payment status atomically
     await db
       .update(payments)
       .set({
         status: targetStatus,
-        verificationMethod: payment.verificationMethod || (decision === 'approve' ? 'telegram' : null),
+        verificationMethod,
         pendingDecision: null,
         decisionEffectiveAt: null,
         updatedAt: now,
@@ -106,31 +110,62 @@ export async function finalizeDueDecisions(
       fromStatus,
       toStatus: targetStatus,
       actor,
-      note: `Finalized after 90s undo window`,
+      note: 'Finalized after 90s undo window',
       createdAt: now,
     });
 
-    // 5. Queue outbound webhook delivery
-    if (eventType) {
-      const payloadObj = {
-        id: generatePrefixedId('evt'),
-        type: eventType,
-        created: now,
-        data: {
-          ...payment,
-          status: targetStatus,
-          retry_url: targetStatus === 'REJECTED' ? `${payment.successUrl}?retry=true` : undefined,
-        },
-      };
+    const finalizedPayment: Payment = {
+      ...payment,
+      status: targetStatus,
+      verificationMethod,
+      pendingDecision: null,
+      decisionEffectiveAt: null,
+      updatedAt: now,
+    };
 
-      await db.insert(webhookDeliveries).values({
-        id: generatePrefixedId('dlv'),
-        paymentId: payment.id,
+    const wallet: Wallet | null = payment.walletId
+      ? (await db.select().from(wallets).where(eq(wallets.id, payment.walletId)).get()) ?? null
+      : null;
+
+    // 5. Queue outbound webhook delivery with normalized snake_case Payment object
+    if (eventType) {
+      await queueWebhookDelivery(
+        db,
+        payment.id,
+        payment.storeId,
         eventType,
-        payload: JSON.stringify(payloadObj),
-        attempt: 0,
-        nextAttemptAt: now,
-      });
+        formatPaymentResponse(finalizedPayment, wallet) as unknown as Record<string, unknown>
+      );
+    }
+
+    // 6. Finalize Telegram notification card (remove Undo button, freeze static badge)
+    if (bot && payment.telegramMessageId) {
+      const ownerChatId = await getOwnerChatId(db, env);
+      if (ownerChatId) {
+        const store = await db
+          .select()
+          .from(stores)
+          .where(eq(stores.id, payment.storeId))
+          .get();
+        const storeName = store?.name || 'Store';
+        const baseCard =
+          finalizedPayment.method === 'cod'
+            ? (formatCodCard as (p: Payment, s?: string) => string)(finalizedPayment, storeName)
+            : (formatSubmittedCard as (p: Payment, w?: Wallet | null, s?: string) => string)(
+                finalizedPayment,
+                wallet,
+                storeName
+              );
+
+        await finalizeNotificationCard(
+          bot,
+          ownerChatId,
+          payment.telegramMessageId,
+          baseCard,
+          targetStatus,
+          actor
+        );
+      }
     }
 
     finalizedCount++;
@@ -142,12 +177,12 @@ export async function finalizeDueDecisions(
 export interface ApplyDecisionParams {
   db: Database;
   env: Env;
-  merchantId: string;
   telegramChatId: number;
   paymentId: string;
   action: 'approve' | 'reject' | 'confirm' | 'cancel';
   actorName: string;
   actorDb: string;
+  storeId?: string;
   bot?: Bot<any>;
   originalMessageId?: number | null;
 }
@@ -169,7 +204,7 @@ export async function applyPaymentDecision(
   const {
     db,
     env,
-    merchantId,
+    storeId,
     telegramChatId,
     paymentId,
     action,
@@ -179,10 +214,15 @@ export async function applyPaymentDecision(
     originalMessageId,
   } = params;
 
+  const lookupConditions = [eq(payments.id, paymentId)];
+  if (storeId) {
+    lookupConditions.push(eq(payments.storeId, storeId));
+  }
+
   const [payment] = await db
     .select()
     .from(payments)
-    .where(and(eq(payments.id, paymentId), eq(payments.merchantId, merchantId)))
+    .where(and(...lookupConditions))
     .limit(1);
 
   if (!payment) {
@@ -190,7 +230,7 @@ export async function applyPaymentDecision(
   }
 
   const allowedStatuses =
-    action === 'confirm' || action === 'cancel' ? ['CREATED'] : ['SUBMITTED'];
+    action === 'confirm' || action === 'cancel' ? ['CREATED', 'CONFIRMED'] : ['SUBMITTED'];
 
   if (!allowedStatuses.includes(payment.status) || payment.pendingDecision !== null) {
     return { success: false, reason: 'already_decided', payment };
@@ -200,6 +240,15 @@ export async function applyPaymentDecision(
   const undoWindowSeconds = parseInt(env.UNDO_WINDOW_SECONDS || '90', 10);
   const effectiveAt = now + undoWindowSeconds;
 
+  const updateConditions = [
+    eq(payments.id, paymentId),
+    inArray(payments.status, allowedStatuses),
+    isNull(payments.pendingDecision),
+  ];
+  if (storeId) {
+    updateConditions.push(eq(payments.storeId, storeId));
+  }
+
   const updatedPayments = await db
     .update(payments)
     .set({
@@ -208,14 +257,7 @@ export async function applyPaymentDecision(
       decisionEffectiveAt: effectiveAt,
       updatedAt: now,
     })
-    .where(
-      and(
-        eq(payments.id, paymentId),
-        eq(payments.merchantId, merchantId),
-        inArray(payments.status, allowedStatuses),
-        isNull(payments.pendingDecision)
-      )
-    )
+    .where(and(...updateConditions))
     .returning();
 
   if (updatedPayments.length === 0) {
@@ -223,24 +265,39 @@ export async function applyPaymentDecision(
   }
 
   const updatedPayment = updatedPayments[0];
+  const cardMessageId = originalMessageId ?? updatedPayment.telegramMessageId;
 
   // If a Telegram notification card message ID is known, edit the original card
-  if (bot && originalMessageId) {
+  if (bot && cardMessageId) {
     try {
+      const store = await db
+        .select()
+        .from(stores)
+        .where(eq(stores.id, updatedPayment.storeId))
+        .get();
+      const storeName = store?.name || 'Store';
+
       let baseCard = '';
       if (updatedPayment.method === 'cod') {
-        baseCard = formatCodCard(updatedPayment);
+        baseCard = (formatCodCard as (p: Payment, s?: string) => string)(
+          updatedPayment,
+          storeName
+        );
       } else {
-        let wallet = null;
+        let wallet: Wallet | null = null;
         if (updatedPayment.walletId) {
           const [w] = await db
             .select()
-            .from(merchantWallets)
-            .where(eq(merchantWallets.id, updatedPayment.walletId))
+            .from(wallets)
+            .where(eq(wallets.id, updatedPayment.walletId))
             .limit(1);
           wallet = w ?? null;
         }
-        baseCard = formatSubmittedCard(updatedPayment, wallet);
+        baseCard = (formatSubmittedCard as (p: Payment, w?: Wallet | null, s?: string) => string)(
+          updatedPayment,
+          wallet,
+          storeName
+        );
       }
 
       const timeString = new Date(effectiveAt * 1000).toLocaleTimeString('en-US', {
@@ -250,12 +307,12 @@ export async function applyPaymentDecision(
       const newCardText = appendGracePeriodStatus(baseCard, action, actorName, timeString);
       const keyboard = createUndoKeyboard(paymentId);
 
-      await bot.api.editMessageText(telegramChatId, originalMessageId, newCardText, {
+      await bot.api.editMessageText(telegramChatId, cardMessageId, newCardText, {
         parse_mode: 'HTML',
         reply_markup: keyboard,
       });
     } catch (err) {
-      console.error(`[Decision] Failed to edit original notification card ${originalMessageId}:`, err);
+      console.error(`[Decision] Failed to edit original notification card ${cardMessageId}:`, err);
     }
   }
 
@@ -264,4 +321,81 @@ export async function applyPaymentDecision(
     payment: updatedPayment,
     effectiveAt,
   };
+}
+
+/**
+ * Reopens a REJECTED payment (within 7 days) back to CREATED so the customer can retry,
+ * and queues a `payment.reopened` webhook with the normalized snake_case Payment payload.
+ */
+export async function reopenRejectedPayment(
+  db: Database,
+  paymentId: string,
+  actor: string
+): Promise<{ success: boolean; payment?: Payment; reason?: 'not_found' | 'invalid_state' | 'too_old' }> {
+  const payment = await db
+    .select()
+    .from(payments)
+    .where(eq(payments.id, paymentId))
+    .get();
+
+  if (!payment) {
+    return { success: false, reason: 'not_found' };
+  }
+
+  if (payment.status !== 'REJECTED') {
+    return { success: false, reason: 'invalid_state', payment };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const sevenDaysSeconds = 7 * 24 * 3600;
+  if (now - payment.updatedAt > sevenDaysSeconds) {
+    return { success: false, reason: 'too_old', payment };
+  }
+
+  const newExpiresAt = now + 24 * 3600;
+
+  await db
+    .update(payments)
+    .set({
+      status: 'CREATED',
+      attempts: 0,
+      pendingDecision: null,
+      decisionEffectiveAt: null,
+      expiresAt: newExpiresAt,
+      updatedAt: now,
+    })
+    .where(eq(payments.id, payment.id));
+
+  await db.insert(paymentEvents).values({
+    paymentId: payment.id,
+    fromStatus: 'REJECTED',
+    toStatus: 'CREATED',
+    actor,
+    note: 'Payment reopened for customer retry',
+    createdAt: now,
+  });
+
+  const reopenedPayment: Payment = {
+    ...payment,
+    status: 'CREATED',
+    attempts: 0,
+    pendingDecision: null,
+    decisionEffectiveAt: null,
+    expiresAt: newExpiresAt,
+    updatedAt: now,
+  };
+
+  const wallet: Wallet | null = payment.walletId
+    ? (await db.select().from(wallets).where(eq(wallets.id, payment.walletId)).get()) ?? null
+    : null;
+
+  await queueWebhookDelivery(
+    db,
+    payment.id,
+    payment.storeId,
+    'payment.reopened',
+    formatPaymentResponse(reopenedPayment, wallet) as unknown as Record<string, unknown>
+  );
+
+  return { success: true, payment: reopenedPayment };
 }

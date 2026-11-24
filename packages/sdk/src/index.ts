@@ -14,6 +14,7 @@ export type {
   Payment,
   PaymentMethod,
   PaymentStatus,
+  SMPGCheckoutOptions,
   SMPGOptions,
   SubmitPaymentParams,
   SubmitPaymentResult,
