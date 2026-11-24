@@ -94,3 +94,22 @@ All verification checks passed with zero issues:
    - Zero emojis across `apps/core/src/bot/**/*.ts` and `apps/core/src/services/{notification,webhook,decision}.ts`.
    - `skills/smpg-integration/SKILL.md` and `.agents/skills/smpg-integration/SKILL.md` verified identical via `diff -u`.
    - `scripts/setup.ts` bundles cleanly via `bun build --target=bun` (11.84 KB).
+
+---
+
+### Post-Sprint Follow-Up: Onboarding Polish & Stylized Setup CLI (`@clack/prompts`)
+
+Following real-world end-to-end testing of `bun run setup`, several UX and reliability improvements were added:
+
+- **README & Branding (`README.md`, `docs/smpg-logo.png`)**:
+  - Added `docs/smpg-logo.png` centered header, explicit prerequisites (Telegram account, Cloudflare free-tier account, Bun), and a step-by-step `@BotFather` + storefront `.env` connection guide.
+- **Failsafe Edge Webhook Registration & Secret Trimming (`apps/core/src/index.ts`, `apps/core/src/bot/index.ts`, `scripts/setup.ts`)**:
+  - Added `POST /v1/telegram-webhook/register` on `apps/core` so Cloudflare's edge handles Telegram `setWebhook`, `getMe`, and `setMyCommands` (eliminating local ISP rate-limit issues and returning HTTP `429` + `retry_after` cleanly).
+  - Removed the trailing `\n` bug in `putSecret()` (piping trimmed secret values verbatim) and added defensive `.trim()` on `TELEGRAM_WEBHOOK_SECRET` and `TELEGRAM_BOT_TOKEN`.
+  - Simplified owner onboarding by dropping the default 32-char `SETUP_TOKEN` claim link in favor of first-`/start` auto-claim (with optional explicit `OWNER_TELEGRAM_ID`).
+- **Resumable Setup State (`scripts/setup.ts`, `.gitignore`)**:
+  - Added step-level state persistence in `.smpg-setup-state.json` (`0600` permissions, gitignored, auto-deleted on completion, `--reset` flag supported) so interrupted runs resume cleanly from the last successful step.
+- **Stylized Interactive CLI (`scripts/setup.ts`, `package.json`, `bun.lock`)**:
+  - Added `@clack/prompts` (`1.9.0`) and `picocolors` (`1.1.1`) as root `devDependencies` (keeping `packages/sdk` zero-dependency).
+  - Rebuilt `scripts/setup.ts` with a cyan `SMPG` ASCII banner, `p.intro()` / `p.outro()`, visual resume checklist (`p.note()` + `p.select()`), masked token entry (`p.password()`), elapsed-timer spinners (`p.spinner({ indicator: 'timer' })`) for D1/deploy/webhook registration with live per-second `429` countdowns, a block progress bar (`p.progress({ style: 'block' })`) for secret uploads, and a rounded summary `p.box()`.
+  - Verified with strict `tsc --noEmit` on `scripts/setup.ts`, `bun build scripts/setup.ts --target=bun` (77.72 KB), `bun run typecheck`, and `bun test` (**72 pass, 0 fail**).
